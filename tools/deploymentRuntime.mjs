@@ -34,15 +34,47 @@ function resolveRepoFile(relativePath, label) {
 const manifestFile = resolveRepoFile(MANIFEST_RELATIVE_PATH, 'Deployment runtime manifest');
 const manifest = JSON.parse(readFileSync(manifestFile.absolutePath, 'utf8'));
 
+const runtimeContract =
+  manifest.runtimeContract && typeof manifest.runtimeContract === 'object'
+    ? manifest.runtimeContract
+    : {};
 const backendEntryPoint = String(manifest.backend?.entryPoint || '');
 const healthcheckPath = String(manifest.backend?.healthcheckPath || '/api/health');
 const frontendOutputDirectory = String(manifest.frontend?.outputDirectory || 'dist');
+const backendContainerDockerfilePath = String(manifest.backend?.container?.dockerfilePath || '');
+const nodeVersion = String(runtimeContract.nodeVersion || '').trim();
+const pythonVersion = String(runtimeContract.pythonVersion || '').trim();
+const nodeVersionFiles = Array.isArray(runtimeContract.versionFiles?.node)
+  ? runtimeContract.versionFiles.node.map((value) => String(value))
+  : [];
+const pythonVersionFiles = Array.isArray(runtimeContract.versionFiles?.python)
+  ? runtimeContract.versionFiles.python.map((value) => String(value))
+  : [];
+const preferredBootstrapCommands =
+  manifest.python?.preferredBootstrapCommands &&
+  typeof manifest.python.preferredBootstrapCommands === 'object'
+    ? manifest.python.preferredBootstrapCommands
+    : {};
+const windowsBootstrapCommands = Array.isArray(preferredBootstrapCommands.windows)
+  ? preferredBootstrapCommands.windows
+  : [];
+const posixBootstrapCommands = Array.isArray(preferredBootstrapCommands.posix)
+  ? preferredBootstrapCommands.posix
+  : [];
 const pythonRequirementsPath = String(manifest.python?.requirementsPath || '');
 const pythonWorkerScriptPath = String(manifest.python?.workerScriptPath || '');
 const pythonVenvDirectory = String(manifest.python?.venvDirectory || '.venv');
 const requiredPythonPackages = Array.isArray(manifest.python?.requiredPackages)
   ? manifest.python.requiredPackages
   : [];
+const deploymentTargets =
+  manifest.deploymentTargets && typeof manifest.deploymentTargets === 'object'
+    ? manifest.deploymentTargets
+    : {};
+
+function quotePowerShell(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
 
 function spawnCommand(command, args, { env, stdio = 'inherit' } = {}) {
   const runtimeEnv = {
@@ -51,20 +83,19 @@ function spawnCommand(command, args, { env, stdio = 'inherit' } = {}) {
   };
 
   if (process.platform === 'win32') {
-    const quote = (value) => {
-      const normalized = String(value);
-      if (/^[A-Za-z0-9_./:\\-]+$/u.test(normalized)) {
-        return normalized;
+    return spawnSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-Command',
+        ['&', quotePowerShell(command), ...args.map(quotePowerShell)].join(' '),
+      ],
+      {
+        cwd: process.cwd(),
+        env: runtimeEnv,
+        stdio,
       }
-
-      return `'${normalized.replace(/'/g, "''")}'`;
-    };
-
-    return spawnSync('powershell.exe', ['-NoProfile', '-Command', [quote(command), ...args.map(quote)].join(' ')], {
-      cwd: process.cwd(),
-      env: runtimeEnv,
-      stdio,
-    });
+    );
   }
 
   return spawnSync(command, args, {
@@ -115,6 +146,160 @@ function normalizeRequirementName(requirement) {
   return requirement.split(/[<>=!~]/u)[0].trim().toLowerCase();
 }
 
+function normalizeVersionPrefix(version) {
+  return String(version || '').trim().replace(/\.x$/u, '');
+}
+
+function formatCommand(command, args = []) {
+  return [command, ...args].join(' ');
+}
+
+function normalizeCommandSpec(specification) {
+  if (typeof specification === 'string' && specification.trim()) {
+    return {
+      command: specification.trim(),
+      args: [],
+    };
+  }
+
+  if (Array.isArray(specification) && specification.length > 0) {
+    const [command, ...args] = specification;
+    const normalizedCommand = String(command || '').trim();
+    if (!normalizedCommand) {
+      return null;
+    }
+
+    return {
+      command: normalizedCommand,
+      args: args.map((value) => String(value)),
+    };
+  }
+
+  return null;
+}
+
+function bootstrapPythonCandidates() {
+  const configuredCandidates =
+    process.platform === 'win32' ? windowsBootstrapCommands : posixBootstrapCommands;
+  const normalizedConfiguredCandidates = configuredCandidates
+    .map(normalizeCommandSpec)
+    .filter(Boolean);
+  if (normalizedConfiguredCandidates.length > 0) {
+    return normalizedConfiguredCandidates;
+  }
+
+  const fallbackCandidates =
+    process.platform === 'win32'
+      ? [['python'], ['py']]
+      : [['python3'], ['python']];
+
+  return fallbackCandidates.map(normalizeCommandSpec).filter(Boolean);
+}
+
+function inspectPythonCandidate(candidate) {
+  const result = capture(candidate.command, [
+    ...candidate.args,
+    '-c',
+    "import json, sys; print(json.dumps({'version': f'{sys.version_info[0]}.{sys.version_info[1]}', 'executable': sys.executable}))",
+  ]);
+
+  if (!result.ok) {
+    return null;
+  }
+
+  try {
+    const payload = JSON.parse(result.stdout || '{}');
+    const executable = String(payload.executable || '').trim();
+    const detectedVersion = String(payload.version || '').trim();
+    if (!executable) {
+      return null;
+    }
+
+    return {
+      command: executable,
+      detectedVersion,
+      displayCommand: formatCommand(candidate.command, candidate.args),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function ensureVersionFilesMatch({ files, expectedVersion, label, platform }) {
+  const expectedPrefix = normalizeVersionPrefix(expectedVersion);
+
+  for (const relativePath of files) {
+    const versionFile = resolveRepoFile(relativePath, `${label} version file`);
+    const declaredVersion = readFileSync(versionFile.absolutePath, 'utf8').trim();
+
+    if (!declaredVersion) {
+      fail(`${platform}: ${versionFile.relativePath} is empty.`);
+    }
+
+    if (expectedPrefix && !declaredVersion.startsWith(expectedPrefix)) {
+      fail(
+        `${platform}: ${versionFile.relativePath} declares "${declaredVersion}" but deployment/runtime-manifest.json expects ${expectedVersion}.`
+      );
+    }
+
+    console.log(
+      `[deploy] ${platform}: verified ${label} version file ${versionFile.relativePath} -> ${declaredVersion}`
+    );
+  }
+}
+
+function verifyDeploymentTargets({ platform }) {
+  const targets = Object.entries(deploymentTargets);
+  if (targets.length === 0) {
+    fail(`${platform}: deployment/runtime-manifest.json does not declare any deploymentTargets.`);
+  }
+
+  return targets.map(([targetName, rawTarget]) => {
+    const target = rawTarget && typeof rawTarget === 'object' ? rawTarget : {};
+    const intent = String(target.intent || '').trim();
+    const strategy = String(target.strategy || '').trim();
+    const contractPaths = Array.isArray(target.contractPaths)
+      ? target.contractPaths
+          .map((item) => String(item || '').trim())
+          .filter((item) => item.length > 0)
+      : [];
+
+    if (!intent) {
+      fail(`${platform}: deployment target "${targetName}" is missing intent.`);
+    }
+
+    if (!strategy) {
+      fail(`${platform}: deployment target "${targetName}" is missing strategy.`);
+    }
+
+    if (contractPaths.length === 0) {
+      fail(`${platform}: deployment target "${targetName}" is missing contractPaths.`);
+    }
+
+    const resolvedContracts = contractPaths.map((contractPath) =>
+      resolveRepoFile(contractPath, `${targetName} deployment contract`)
+    );
+
+    const commandSummary = ['bootstrapCommand', 'buildCommand', 'startCommand', 'verifyCommand']
+      .map((key) => String(target[key] || '').trim())
+      .filter((value) => value.length > 0)
+      .join(' | ');
+
+    console.log(
+      `[deploy] ${platform}: ${targetName} -> ${intent} via ${strategy} (${resolvedContracts
+        .map((contract) => contract.relativePath)
+        .join(', ')})${commandSummary ? ` [${commandSummary}]` : ''}`
+    );
+
+    return {
+      name: targetName,
+      intent,
+      strategy,
+      contracts: resolvedContracts,
+    };
+  });
+}
+
 function resolveVenvPythonPath() {
   const candidates = [
     path.join(process.cwd(), pythonVenvDirectory, 'Scripts', 'python.exe'),
@@ -126,14 +311,34 @@ function resolveVenvPythonPath() {
 }
 
 function resolveBootstrapPythonCommand() {
-  const candidates = process.platform === 'win32' ? ['python', 'py'] : ['python3', 'python'];
+  let fallbackCandidate = null;
+  const expectedPythonVersion = normalizeVersionPrefix(pythonVersion);
 
-  for (const candidate of candidates) {
-    const result = capture(candidate, ['--version']);
-    if (result.ok) {
-      console.log(`[deploy] Bootstrap Python detected via: ${candidate} (${result.stdout || result.stderr})`);
-      return candidate;
+  for (const candidate of bootstrapPythonCandidates()) {
+    const resolvedCandidate = inspectPythonCandidate(candidate);
+    if (resolvedCandidate) {
+      console.log(
+        `[deploy] Bootstrap Python detected via: ${resolvedCandidate.displayCommand} (${resolvedCandidate.detectedVersion} -> ${resolvedCandidate.command})`
+      );
+
+      if (!fallbackCandidate) {
+        fallbackCandidate = resolvedCandidate;
+      }
+
+      if (!expectedPythonVersion || resolvedCandidate.detectedVersion === expectedPythonVersion) {
+        return resolvedCandidate.command;
+      }
     }
+  }
+
+  if (fallbackCandidate) {
+    if (expectedPythonVersion) {
+      console.warn(
+        `[deploy] Preferred Python ${expectedPythonVersion} was not found on PATH. Falling back to ${fallbackCandidate.detectedVersion} via ${fallbackCandidate.command}.`
+      );
+    }
+
+    return fallbackCandidate.command;
   }
 
   fail(
@@ -142,7 +347,18 @@ function resolveBootstrapPythonCommand() {
 }
 
 function verifyManifestAndPaths({ platform }) {
+  if (!nodeVersion) {
+    fail(`${platform}: deployment/runtime-manifest.json is missing runtimeContract.nodeVersion.`);
+  }
+
+  if (!pythonVersion) {
+    fail(`${platform}: deployment/runtime-manifest.json is missing runtimeContract.pythonVersion.`);
+  }
+
   const entryPoint = resolveRepoFile(backendEntryPoint, 'Backend entrypoint');
+  const backendContainerDockerfile = backendContainerDockerfilePath
+    ? resolveRepoFile(backendContainerDockerfilePath, 'Backend container Dockerfile')
+    : null;
   const requirements = resolveRepoFile(
     pythonRequirementsPath,
     'Python extraction requirements file'
@@ -176,12 +392,30 @@ function verifyManifestAndPaths({ platform }) {
     );
   }
 
+  ensureVersionFilesMatch({
+    files: nodeVersionFiles,
+    expectedVersion: nodeVersion,
+    label: 'Node runtime',
+    platform,
+  });
+  ensureVersionFilesMatch({
+    files: pythonVersionFiles,
+    expectedVersion: pythonVersion,
+    label: 'Python runtime',
+    platform,
+  });
+
   console.log(
     `[deploy] ${platform}: verified deployment manifest at ${manifestFile.relativePath}`
   );
   console.log(
     `[deploy] ${platform}: verified backend entrypoint at ${entryPoint.relativePath}`
   );
+  if (backendContainerDockerfile) {
+    console.log(
+      `[deploy] ${platform}: verified backend container contract at ${backendContainerDockerfile.relativePath}`
+    );
+  }
   console.log(
     `[deploy] ${platform}: verified Python extraction requirements at ${requirements.relativePath}`
   );
@@ -189,14 +423,20 @@ function verifyManifestAndPaths({ platform }) {
     `[deploy] ${platform}: verified Python worker entry at ${workerScript.relativePath}`
   );
   console.log(
+    `[deploy] ${platform}: preferred backend runtime contract -> Node ${nodeVersion}, Python ${pythonVersion}`
+  );
+  console.log(
     `[deploy] ${platform}: pinned Python extraction packages -> ${pinnedRequirements.join(', ')}`
   );
+  const verifiedTargets = verifyDeploymentTargets({ platform });
 
   return {
+    backendContainerDockerfile,
     entryPoint,
     requirements,
     workerScript,
     pinnedRequirements,
+    verifiedTargets,
   };
 }
 
@@ -264,9 +504,24 @@ function detectPythonCapabilities({ pythonExecutable, platform, failIfMissing })
   try {
     const result = capture(pythonExecutable, [workerScript.absolutePath, 'detect', inputPath, outputPath]);
     if (!result.ok) {
+      if (result.error?.code === 'EPERM') {
+        fail(
+          `${platform}: the current environment denied child-process execution for ${pythonExecutable}. ` +
+            'This deployment/runtime contract requires the Node process to spawn the Python extraction worker directly.'
+        );
+      }
+
+      const diagnostics = [
+        result.stderr,
+        result.stdout,
+        result.error?.message,
+        result.status ? `exit status ${result.status}` : '',
+      ]
+        .filter((value) => Boolean(value))
+        .join(' | ');
       fail(
         `${platform}: failed to execute the Python extraction detector with ${pythonExecutable}. ` +
-          `${result.stderr || result.stdout || 'No diagnostics were returned.'}`
+          `${diagnostics || 'No diagnostics were returned.'}`
       );
     }
 

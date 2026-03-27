@@ -10,7 +10,11 @@ View your app in AI Studio: https://ai.studio/apps/0881a34b-a784-43a9-bb78-0ee37
 
 ## Run Locally
 
-**Prerequisites:** Node.js and Python
+**Preferred runtime contract:** Node 22.x and Python 3.11
+
+The repo now includes `.nvmrc`, `.node-version`, and `.python-version` so the
+runtime contract is discoverable before bootstrap instead of being buried in
+platform-specific settings.
 
 
 1. Bootstrap the local runtime:
@@ -23,7 +27,14 @@ View your app in AI Studio: https://ai.studio/apps/0881a34b-a784-43a9-bb78-0ee37
 
 ## Deployment
 
-Multi-platform deployment is now driven by the shared runtime manifest in `deployment/runtime-manifest.json` and the shared helper in `tools/deploymentRuntime.mjs`.
+Multi-platform deployment is driven by:
+
+- `deployment/runtime-manifest.json`: canonical deployment manifest, including the explicit Python extraction dependency path and platform contract files
+- `server/documentRuntime/python/requirements.txt`: canonical Python extraction requirements
+- `tools/deploymentRuntime.mjs`: shared verification/bootstrap helper
+- `Dockerfile`: canonical backend runtime adapter for backend-capable managed hosts
+
+Backend-capable managed hosts now converge on the shared `Dockerfile` contract, while Netlify and Vercel stay explicitly frontend-only.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for:
 

@@ -4866,3 +4866,165 @@ pm run build\ successfully.
   - additional build verification should continue to use the platform-specific scripts:
     - `npm run deploy:render:build`
     - `npm run deploy:netlify:build`
+
+- Date: 2026-03-27
+- Area: Deployment Configuration / Runtime Version Contract / Raw-Host Visibility
+- Summary: Tightened the deployment layer by adding explicit repo-root runtime version files, wiring those versions into the canonical deployment manifest, and teaching the shared deployment helper to fail fast when the runtime contract drifts from the manifest.
+- Reason:
+  - The repository already had the shared manifest/helper plus Docker-backed backend platform adapters, but Node/Python version intent still lived mostly in inference and documentation instead of the same deployment contract that governs the Python extraction requirements path.
+  - That made the Python dependency path explicit while leaving local/VPS runtime selection less discoverable than it should be.
+- Runtime Contract Added:
+  - Added `runtimeContract` to `deployment/runtime-manifest.json`
+    - Node: `22.x`
+    - Python: `3.11`
+    - version files:
+      - `.nvmrc`
+      - `.node-version`
+      - `.python-version`
+  - Added `preferredBootstrapCommands` under the Python manifest contract so local/server bootstrap prefers Python 3.11 before falling back to another interpreter on PATH.
+- Helper Refinement:
+  - Updated `tools/deploymentRuntime.mjs`
+    - verifies the repo-root version files and fails fast if they disagree with the shared manifest
+    - logs the preferred backend runtime contract during deployment verification
+    - resolves bootstrap Python candidates through the manifest instead of assuming plain `python` / `python3` is always the right interpreter
+  - This keeps the runtime-version contract discoverable and enforceable in the same deployment layer that already protects `server/documentRuntime/python/requirements.txt`.
+- Additional Config Alignment:
+  - Added `.nvmrc`
+  - Added `.node-version`
+  - Added `.python-version`
+  - Updated `package.json`
+    - added `engines.node = 22.x`
+  - Updated `netlify.toml`
+    - added `NODE_VERSION = 22` for frontend build consistency
+  - Updated `Makefile`
+    - added `verify-local`
+  - Updated `Dockerfile`
+    - now declares Python `3.11` explicitly during backend image provisioning instead of depending on a generic distro `python3` package selection
+  - Updated docs:
+    - `README.md`
+    - `DEPLOYMENT.md`
+- Sensitive Areas Future Contributors Must Preserve:
+  - Keep the repo-root version files aligned with `deployment/runtime-manifest.json` whenever the backend runtime contract changes.
+  - Keep Docker, raw-host bootstrap, and the shared helper aligned in the same change when updating Node or Python versions.
+  - Do not change the Python extraction dependency path without updating the helper and manifest together.
+- Files Introduced Or Materially Changed In This Runtime-Contract Pass:
+  - `deployment/runtime-manifest.json`
+  - `tools/deploymentRuntime.mjs`
+  - `Dockerfile`
+  - `package.json`
+  - `netlify.toml`
+  - `Makefile`
+  - `README.md`
+  - `DEPLOYMENT.md`
+  - `ZOOTOPIA_PROJECT_LEDGER.txt`
+  - `.nvmrc`
+  - `.node-version`
+  - `.python-version`
+- Verification:
+  - `node tools/deploymentRuntime.mjs verify` should now also validate the repo-root version files against the shared manifest.
+  - Deep Python verification still depends on an environment that allows the Node process to spawn the Python worker directly.
+
+- Date: 2026-03-27
+- Area: Deployment Configuration / Docker-First Backend Contract Hardening
+- Summary: Hardened the multi-platform deployment layer so the canonical Python extraction dependency path remains explicit across local, Linux/VPS, Render, Netlify, Vercel, Railway, Fly.io, Google Cloud Run, and Docker, while removing the remaining Render-native runtime guesswork and fixing Windows helper execution for repo-local Python paths.
+- Reason:
+  - The repository already had a manifest/helper deployment layer, but two practical gaps remained:
+    - `tools/deploymentRuntime.mjs` invoked repo-local Windows executables through PowerShell incorrectly when paths contained spaces, which broke deep Python runtime verification for `.venv`.
+    - Render still depended on a native Node service path, which left Python runtime behavior partially dependent on host image assumptions rather than the same explicit contract used by the other backend-capable platforms.
+  - The requested deployment system needs one canonical dependency definition plus explicit, honest platform adapters.
+- Deployment Strategy Now In Force:
+  - Hybrid strategy:
+    - shared manifest plus shared helper for validation/bootstrap
+    - shared Docker backend for backend-capable managed hosts
+    - explicit frontend-only contracts for static hosts
+  - Backend-capable managed hosts now converge on the shared `Dockerfile`:
+    - Render
+    - Railway
+    - Fly.io
+    - Google Cloud Run
+    - generic Docker/container hosts
+  - Local development and generic Linux/VPS keep the raw-host helper path:
+    - `npm run setup:local`
+    - `./tools/setup-linux-server.sh`
+    - `./tools/start-linux-server.sh`
+  - Netlify and Vercel remain explicitly frontend-only.
+- Canonical Deployment Source Of Truth:
+  - `deployment/runtime-manifest.json`
+    - Still references the canonical Python dependency file:
+      - `server/documentRuntime/python/requirements.txt`
+    - Still references the canonical Python worker:
+      - `server/documentRuntime/python/extract_document.py`
+    - Now also records explicit platform contract files for:
+      - local development
+      - generic Linux server
+      - Render
+      - Netlify
+      - Vercel
+      - Railway
+      - Fly.io
+      - Google Cloud Run
+      - Docker
+    - `tools/deploymentRuntime.mjs verify` now fails fast if those declared platform contract files are missing.
+- Files Updated:
+  - `deployment/runtime-manifest.json`
+    - Added backend container metadata:
+      - `Dockerfile`
+      - `/app/.venv/bin/python`
+    - Replaced the older coarse `platformIntent` list with explicit `deploymentTargets` metadata and contract file paths.
+  - `tools/deploymentRuntime.mjs`
+    - Replaced the Windows PowerShell wrapper with direct executable spawning so repo-local paths like `.venv\Scripts\python.exe` work correctly when the workspace path contains spaces.
+    - Added deployment-target verification driven from `deployment/runtime-manifest.json`.
+    - Improved Python detector failure diagnostics to include stderr/stdout/error/status details instead of a vague empty failure.
+  - `package.json`
+    - Added `verify:deployment-contract`.
+    - Repointed `verify:python-runtime` to the real Python detector so the script name now matches actual behavior.
+  - `render.yaml`
+    - Switched Render to the shared Docker backend contract instead of a native Node build/start path.
+    - Kept `/api/health` explicit.
+    - Kept `DOCUMENT_RUNTIME_PYTHON_EXECUTABLE=/app/.venv/bin/python` explicit.
+  - `tools/start-linux-server.sh`
+    - Added an explicit `node_modules` presence check so raw-host startup fails with a clear instruction instead of a later runtime error.
+  - `README.md`
+    - Updated the top-level deployment summary to describe the manifest/helper/container split clearly.
+  - `DEPLOYMENT.md`
+    - Rewrote the deployment guide to document the Docker-first backend contract, the platform matrix, and the difference between deployment-contract verification and deep Python runtime verification.
+- Platform Behavior After This Pass:
+  - Local development:
+    - `npm run setup:local` remains the canonical bootstrap path.
+    - `.venv` remains the repo-local Python installation target.
+    - deep verification now works correctly against `.venv\Scripts\python.exe` on Windows path-with-spaces workspaces.
+  - Generic Linux/VPS:
+    - `./tools/setup-linux-server.sh` installs Node dependencies, creates `.venv`, installs the canonical requirements, verifies the Python extractor, and builds the frontend.
+    - `./tools/start-linux-server.sh` now fails clearly if either `.venv` or `node_modules` is missing.
+  - Render:
+    - now uses the shared Docker backend via `render.yaml` + `Dockerfile`.
+    - Python dependency installation comes from the container build:
+      - `pip install -r server/documentRuntime/python/requirements.txt`
+  - Netlify:
+    - remains frontend-only via `netlify.toml`.
+    - still verifies the canonical deployment contract during build visibility, but does not claim to host the Python extractor.
+  - Vercel:
+    - remains frontend-only via `vercel.json`.
+    - still verifies the canonical deployment contract during build visibility, but does not claim to host the Python extractor.
+  - Railway:
+    - continues to use `railway.toml` + `Dockerfile`.
+  - Fly.io:
+    - continues to use `fly.toml` + `Dockerfile`.
+  - Google Cloud Run:
+    - continues to use `cloudbuild.yaml` + `Dockerfile`.
+  - Docker:
+    - remains the portability anchor for the backend runtime.
+- Runtime Version Visibility:
+  - The strongest explicit runtime version contract is still the shared container:
+    - `node:22-bookworm-slim`
+  - No raw-host `.python-version` or `.node-version` file was added because the repository still does not prove one safe minor-version pin across every local/VPS environment.
+  - The helper therefore validates capability directly instead of inventing a version contract.
+- Honest Limitations:
+  - The backend still runs via `tsx server.ts`, so backend-capable installs still retain devDependencies intentionally.
+  - Netlify and Vercel still do not host the Express backend or Python extraction runtime.
+  - `verify:python-runtime` is now honest and strict: it will fail until the required Python extraction packages are actually installed into the selected runtime.
+- Verification:
+  - `node tools/deploymentRuntime.mjs verify`
+    - passed after this change.
+  - `node tools/deploymentRuntime.mjs python-detect`
+    - now reaches the real repo-local Python executable correctly on Windows and fails for the real reason when packages are missing, instead of failing behind the old PowerShell invocation bug.

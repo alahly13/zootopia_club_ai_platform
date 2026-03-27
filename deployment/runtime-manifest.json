@@ -1,16 +1,61 @@
 {
   "appName": "zootopia-club-ai",
+  "runtimeContract": {
+    "nodeVersion": "22.x",
+    "pythonVersion": "3.11",
+    "versionFiles": {
+      "node": [
+        ".nvmrc",
+        ".node-version"
+      ],
+      "python": [
+        ".python-version"
+      ]
+    }
+  },
   "backend": {
     "entryPoint": "server.ts",
     "healthcheckPath": "/api/health",
     "startCommand": "npm run start",
-    "defaultPort": 3000
+    "defaultPort": 3000,
+    "container": {
+      "dockerfilePath": "Dockerfile",
+      "pythonExecutable": "/app/.venv/bin/python"
+    }
   },
   "frontend": {
     "buildCommand": "npm run build",
     "outputDirectory": "dist"
   },
   "python": {
+    "preferredBootstrapCommands": {
+      "windows": [
+        [
+          "py",
+          "-3.11"
+        ],
+        [
+          "python3.11"
+        ],
+        [
+          "python"
+        ],
+        [
+          "py"
+        ]
+      ],
+      "posix": [
+        [
+          "python3.11"
+        ],
+        [
+          "python3"
+        ],
+        [
+          "python"
+        ]
+      ]
+    },
     "requirementsPath": "server/documentRuntime/python/requirements.txt",
     "workerScriptPath": "server/documentRuntime/python/extract_document.py",
     "venvDirectory": ".venv",
@@ -37,19 +82,81 @@
       }
     ]
   },
-  "platformIntent": {
-    "backendCapable": [
-      "local-development",
-      "generic-linux-server",
-      "render",
-      "railway",
-      "fly.io",
-      "google-cloud-run",
-      "docker"
-    ],
-    "frontendOnly": [
-      "netlify",
-      "vercel"
-    ]
+  "deploymentTargets": {
+    "localDevelopment": {
+      "intent": "backend-capable",
+      "strategy": "shared-helper-bootstrap",
+      "contractPaths": [
+        "tools/deploymentRuntime.mjs",
+        "package.json"
+      ],
+      "bootstrapCommand": "npm run setup:local",
+      "verifyCommand": "npm run verify:local"
+    },
+    "genericLinuxServer": {
+      "intent": "backend-capable",
+      "strategy": "shared-helper-bootstrap",
+      "contractPaths": [
+        "tools/setup-linux-server.sh",
+        "tools/start-linux-server.sh"
+      ],
+      "bootstrapCommand": "./tools/setup-linux-server.sh",
+      "startCommand": "./tools/start-linux-server.sh"
+    },
+    "render": {
+      "intent": "backend-capable",
+      "strategy": "shared-docker-backend",
+      "contractPaths": [
+        "render.yaml",
+        "Dockerfile"
+      ]
+    },
+    "netlify": {
+      "intent": "frontend-only",
+      "strategy": "static-build",
+      "contractPaths": [
+        "netlify.toml"
+      ],
+      "buildCommand": "npm run deploy:netlify:build"
+    },
+    "vercel": {
+      "intent": "frontend-only",
+      "strategy": "static-build",
+      "contractPaths": [
+        "vercel.json"
+      ],
+      "buildCommand": "npm run deploy:vercel:build"
+    },
+    "railway": {
+      "intent": "backend-capable",
+      "strategy": "shared-docker-backend",
+      "contractPaths": [
+        "railway.toml",
+        "Dockerfile"
+      ]
+    },
+    "flyIo": {
+      "intent": "backend-capable",
+      "strategy": "shared-docker-backend",
+      "contractPaths": [
+        "fly.toml",
+        "Dockerfile"
+      ]
+    },
+    "googleCloudRun": {
+      "intent": "backend-capable",
+      "strategy": "shared-docker-backend",
+      "contractPaths": [
+        "cloudbuild.yaml",
+        "Dockerfile"
+      ]
+    },
+    "docker": {
+      "intent": "backend-capable",
+      "strategy": "shared-docker-backend",
+      "contractPaths": [
+        "Dockerfile"
+      ]
+    }
   }
 }

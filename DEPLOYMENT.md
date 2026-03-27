@@ -2,24 +2,81 @@
 
 ## Current Runtime Shape
 
-Zootopia Club currently runs as one Node service from `server.ts`. In production that same process serves the built SPA from `dist` and spawns the nested Python extraction worker at `server/documentRuntime/python/extract_document.py`.
+Zootopia Club is still one backend process from `server.ts`. In production that same Node process serves `dist` and spawns the nested Python extraction worker at `server/documentRuntime/python/extract_document.py`.
 
-The canonical deployment source of truth now lives in:
+The deployment layer is intentionally split into:
 
-- `deployment/runtime-manifest.json`
-- `server/documentRuntime/python/requirements.txt`
-- `tools/deploymentRuntime.mjs`
+- `deployment/runtime-manifest.json`: canonical deployment manifest, including the explicit Python dependency path and the platform contract files
+- `server/documentRuntime/python/requirements.txt`: canonical Python extraction dependency source
+- `tools/deploymentRuntime.mjs`: shared bootstrap and verification helper
+- `Dockerfile`: portable backend runtime for backend-capable managed hosts
 
-The helper verifies those paths stay aligned before any platform-specific build path proceeds.
+## Strategy
 
-## Canonical Python Extraction Path
+The repository now uses a hybrid deployment strategy:
+
+- shared manifest plus shared helper for validation and bootstrap
+- shared Docker backend for backend-capable managed hosts
+- explicit frontend-only configs for static hosts
+
+That means:
+
+- local development and generic Linux/VPS use the shared helper plus shell scripts
+- Render, Railway, Fly.io, Google Cloud Run, and generic container hosts use the shared `Dockerfile`
+- Netlify and Vercel build only the frontend and do not claim to host the backend Python extractor
+
+## Canonical Python Extraction Contract
 
 The Python extraction stack is intentionally anchored to:
 
 - `server/documentRuntime/python/requirements.txt`
 - `server/documentRuntime/python/extract_document.py`
 
-Every deployment helper path verifies those files first. If either path is missing, deployment fails fast.
+`tools/deploymentRuntime.mjs` fails fast if either file is missing. It also checks that the manifest package list stays aligned with the pinned requirements file.
+
+## Deployment Manifest Visibility
+
+`deployment/runtime-manifest.json` now explicitly records the deployment contract for:
+
+- local development
+- generic Linux server
+- Render
+- Netlify
+- Vercel
+- Railway
+- Fly.io
+- Google Cloud Run
+- Docker
+
+Each target lists its contract files so `node tools/deploymentRuntime.mjs verify` can fail fast if a platform adapter disappears or drifts.
+
+## Runtime Version Contract
+
+The deployment manifest now declares the preferred raw-host/runtime contract as:
+
+- Node `22.x`
+- Python `3.11`
+
+Repo-root visibility files:
+
+- `.nvmrc`
+- `.node-version`
+- `.python-version`
+
+`tools/deploymentRuntime.mjs` verifies those files stay aligned with `deployment/runtime-manifest.json`, so runtime-version intent is discoverable and fail-fast instead of tribal knowledge.
+
+## Verification Commands
+
+- `npm run verify:deployment-contract`
+- `npm run verify:python-runtime`
+- `npm run verify:python-runtime:deep`
+- `npm run verify:local`
+
+What they do:
+
+- `verify:deployment-contract` checks the manifest, backend entrypoint, canonical Python paths, and every declared platform contract file.
+- `verify:python-runtime` runs the real Python detector from `extract_document.py` and fails if required extraction packages are missing.
+- `verify:local` verifies the repo-local `.venv` or an explicitly supplied `DOCUMENT_RUNTIME_PYTHON_EXECUTABLE`.
 
 ## Local Development
 
@@ -30,7 +87,9 @@ Recommended workflow:
 3. `npm run verify:local`
 4. `npm run dev`
 
-`npm run setup:local` creates a repo-local `.venv`, installs `server/documentRuntime/python/requirements.txt`, and leaves the runtime in a state that `server/documentRuntime/config.ts` can auto-detect without manual venv activation.
+`npm run setup:local` creates `.venv`, installs `server/documentRuntime/python/requirements.txt`, and validates the extractor with the real detector. The backend then auto-detects `.venv` through `server/documentRuntime/config.ts` without requiring manual activation.
+
+When multiple Python interpreters are available, the helper now looks for Python `3.11` first before falling back to another interpreter on PATH.
 
 ## Generic Linux Server / VPS
 
@@ -40,87 +99,90 @@ Raw-host path:
 2. Configure `.env`
 3. `./tools/start-linux-server.sh`
 
-The setup script creates `.venv`, installs the Python extraction requirements from the canonical nested path, verifies the Python worker with the real detector, and builds the frontend assets.
-
-The start script keeps `DOCUMENT_RUNTIME_PYTHON_EXECUTABLE` pointed at `.venv/bin/python`, verifies the extraction runtime again, and starts the existing Node backend entrypoint.
+The setup script installs Node dependencies, creates `.venv`, installs the canonical Python requirements, runs the detector, and builds the frontend assets. The start script refuses to run if `node_modules` or the repo-local Python runtime are missing, then re-runs the Python detector before starting the backend.
 
 ## Render
 
-Render uses the explicit native build contract in `render.yaml`:
+Render now uses the shared Docker backend via `render.yaml` plus `Dockerfile`.
 
-- build: `npm run deploy:render:build`
-- start: `NODE_ENV=production DOCUMENT_RUNTIME_PYTHON_EXECUTABLE=.venv/bin/python npm run start`
+This avoids relying on Render-specific Node image behavior for Python availability. Render sees the same explicit Node + Python runtime contract as Railway, Fly.io, and Cloud Run:
 
-That path uses the shared deployment helper to:
-
-- verify `deployment/runtime-manifest.json`
-- verify `server/documentRuntime/python/requirements.txt`
-- create `.venv`
-- install the Python extraction stack into `.venv`
-- verify the extractor with the real `detect` command
-- build the frontend assets
+- Python requirements installed from `server/documentRuntime/python/requirements.txt`
+- backend entrypoint remains `server.ts`
+- runtime Python executable remains `/app/.venv/bin/python`
+- health path remains `/api/health`
 
 ## Netlify
 
-Netlify is intentionally frontend-only in the current architecture.
+Netlify remains frontend-only.
 
-`netlify.toml` runs `npm run deploy:netlify:build`, which verifies the canonical nested Python extraction path for visibility and then builds the frontend. It does **not** pretend that the backend Express server or Python extraction worker run on Netlify.
+`netlify.toml` runs `npm run deploy:netlify:build`, pins Netlify build Node to `22`, verifies the canonical deployment contract, and then builds `dist`. It does not claim to run the Express backend or the Python extraction worker.
 
 ## Vercel
 
-Vercel is also intentionally frontend-only in the current architecture.
+Vercel also remains frontend-only.
 
-`vercel.json` uses:
-
-- `installCommand`: `npm ci --include=dev`
-- `buildCommand`: `npm run deploy:vercel:build`
-- `outputDirectory`: `dist`
-
-Like Netlify, it verifies the canonical nested Python extraction path during build, but it does **not** claim to host the backend Python extraction runtime.
+`vercel.json` installs Node dependencies, runs `npm run deploy:vercel:build`, and publishes `dist`. Like Netlify, it keeps the Python dependency path visible during build without pretending the backend runtime lives there. The repo-root Node version files make the intended Vercel build runtime explicit.
 
 ## Railway
 
-Railway uses `railway.toml` plus the shared `Dockerfile`.
+Railway uses `railway.toml` with `builder = "DOCKERFILE"`.
 
-That keeps the Node backend and the Python extraction worker inside one explicit container instead of relying on automatic buildpack inference.
+That keeps dependency installation explicit inside the shared container:
+
+- `npm ci --include=dev`
+- `.venv` creation
+- `pip install -r server/documentRuntime/python/requirements.txt`
+- manifest verification
+- Python capability verification
 
 ## Fly.io
 
 Fly.io uses `fly.toml` plus the shared `Dockerfile`.
 
-The Fly config keeps the internal port explicit and sets `DOCUMENT_RUNTIME_PYTHON_EXECUTABLE` to the container’s repo-local `.venv`.
+`fly.toml` keeps the internal port and `DOCUMENT_RUNTIME_PYTHON_EXECUTABLE=/app/.venv/bin/python` explicit, while the container owns installation of both Node and Python dependencies.
 
 ## Google Cloud Run
 
-Cloud Run uses `cloudbuild.yaml` plus the shared `Dockerfile`.
+Cloud Run uses `cloudbuild.yaml` to build and deploy the shared Docker image.
 
-The Docker image is the portability anchor for the current backend architecture, so Cloud Run sees the same Node runtime, the same `.venv`, and the same nested Python requirements path as the other backend-capable targets.
+That gives Cloud Run the same backend runtime contract as Render, Railway, and Fly.io instead of a separate platform-specific install path.
 
 ## Docker Fallback
 
-The `Dockerfile` is the universal backend fallback for:
+The `Dockerfile` is the portable backend contract for:
 
+- Render
 - Railway
 - Fly.io
 - Google Cloud Run
 - generic container hosts
-- any future environment that needs one explicit Node + Python runtime
 
 Build locally with:
 
 - `docker build -t zootopia-club-ai .`
 - `docker run --rm -p 3000:3000 --env-file .env zootopia-club-ai`
 
-## Verification Commands
+## Runtime Version Consistency
 
-- `npm run verify:python-runtime`
-- `npm run verify:python-runtime:deep`
-- `npm run verify:local`
+Runtime visibility now exists in both the manifest and repo-root version files:
 
-`verify:python-runtime:deep` uses the real Python detector from `extract_document.py`, not just a file-existence check.
+- `deployment/runtime-manifest.json`
+- `.nvmrc`
+- `.node-version`
+- `.python-version`
+- `package.json` `engines.node`
+
+The shared backend container also stays explicit:
+
+- `Dockerfile` pins the backend base image to the Node 22 line
+- `Dockerfile` provisions Python `3.11`, `venv`, and system libraries before installing the canonical requirements file
+
+For raw-host installs, the helper still validates real Python capability after installation rather than assuming that version declarations alone guarantee a working extraction runtime.
 
 ## Important Limitations
 
-- The backend still starts from `server.ts` through `tsx`, so devDependencies remain intentionally present in backend deployment installs for now.
-- Netlify and Vercel are frontend-only deployment targets in the current repository architecture.
-- No global `.python-version` or `.node-version` file was added in this pass because the repo still lacks a validated cross-platform minor-version contract for every target. The container path is the strongest portable runtime pin for now.
+- The backend still starts through `tsx server.ts`, so backend-capable installs intentionally retain devDependencies for now.
+- Netlify and Vercel are frontend-only in the current architecture.
+- Local and raw Linux setups require a Python runtime with `venv` support available on PATH.
+- Deep Python verification still depends on an environment that allows the Node process to spawn the Python worker directly.

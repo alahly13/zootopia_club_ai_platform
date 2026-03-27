@@ -1,12 +1,18 @@
 SHELL := /bin/bash
 
-.PHONY: setup-local verify-python setup-linux start-linux docker-build docker-run
+.PHONY: setup-local verify-deployment verify-python verify-local setup-linux start-linux docker-build docker-run
 
 setup-local:
 	node tools/deploymentRuntime.mjs local-bootstrap
 
+verify-deployment:
+	npm run verify:deployment-contract
+
 verify-python:
-	node tools/deploymentRuntime.mjs python-detect
+	npm run verify:python-runtime
+
+verify-local:
+	npm run verify:local
 
 setup-linux:
 	node tools/deploymentRuntime.mjs linux-server-bootstrap

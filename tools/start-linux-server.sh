@@ -17,6 +17,12 @@ if [[ ! -x "$DOCUMENT_RUNTIME_PYTHON_EXECUTABLE" ]]; then
   exit 1
 fi
 
+if [[ ! -d "node_modules" ]]; then
+  echo "[deploy] Missing Node dependencies in $ROOT_DIR/node_modules" >&2
+  echo "[deploy] Run ./tools/setup-linux-server.sh first." >&2
+  exit 1
+fi
+
 node tools/deploymentRuntime.mjs python-detect
 
 if [[ ! -d "dist" ]]; then
