@@ -1,0 +1,11 @@
+# Render deployment contract for the current single-service architecture.
+# The Node server remains the primary web service, and it spawns the nested
+# Python extraction worker directly from server/documentRuntime/python/.
+# Render keeps a native build path here, while Docker remains the portable
+# fallback for other backend-capable platforms.
+services:
+  - type: web
+    name: zootopia-club-ai
+    env: node
+    buildCommand: npm run deploy:render:build
+    startCommand: NODE_ENV=production DOCUMENT_RUNTIME_PYTHON_EXECUTABLE=.venv/bin/python npm run start

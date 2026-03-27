@@ -1,0 +1,13 @@
+node_modules
+dist
+runtime
+.venv
+.env
+.env.*
+!.env.example
+build
+coverage
+*.log
+*.tmp
+.git
+.gitignore

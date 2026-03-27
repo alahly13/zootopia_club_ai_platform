@@ -1,0 +1,290 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and usage data",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "picture": { "type": "string" },
+        "role": { "type": "string", "enum": ["Admin", "User"] },
+        "status": { "type": "string", "enum": ["Active", "Suspended", "Blocked", "Pending"] },
+        "firstLoginDate": { "type": "string" },
+        "lastLogin": { "type": "string" },
+        "permissions": {
+          "type": "object",
+          "properties": {
+            "uploadFiles": { "type": "boolean" },
+            "generateQuestions": { "type": "boolean" },
+            "generateImages": { "type": "boolean" },
+            "generateVideos": { "type": "boolean" },
+            "generateInfographics": { "type": "boolean" },
+            "useChatbot": { "type": "boolean" },
+            "useLiveVoice": { "type": "boolean" },
+            "useStudyTools": { "type": "boolean" },
+            "exportFiles": { "type": "boolean" },
+            "viewAdvancedVisuals": { "type": "boolean" },
+            "accessPremiumTools": { "type": "boolean" }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "properties": {
+            "aiRequestsPerDay": { "type": "number" },
+            "quizGenerationsPerDay": { "type": "number" },
+            "uploadsPerDay": { "type": "number" }
+          }
+        },
+        "usage": {
+          "type": "object",
+          "properties": {
+            "aiRequestsToday": { "type": "number" },
+            "quizGenerationsToday": { "type": "number" },
+            "uploadsToday": { "type": "number" },
+            "lastResetDate": { "type": "string" }
+          }
+        },
+        "totalUploads": { "type": "number" },
+        "totalAIRequests": { "type": "number" },
+        "totalQuizzes": { "type": "number" },
+        "bio": { "type": "string" },
+        "avatarUrl": { "type": "string" }
+      },
+      "required": ["id", "name", "email", "role", "status"]
+    },
+    "GiftCode": {
+      "title": "GiftCode",
+      "description": "Redeemable gift codes for credits",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "amount": { "type": "number" },
+        "isActive": { "type": "boolean" },
+        "redeemedBy": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "code", "amount", "isActive", "createdAt"]
+    },
+    "SecretCode": {
+      "title": "SecretCode",
+      "description": "Redeemable secret codes for unlocking secrets",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "userId": { "type": "string" },
+        "purpose": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "used", "expired"] },
+        "expiresAt": { "type": "string" },
+        "maxUsage": { "type": "number" },
+        "usageCount": { "type": "number" },
+        "issuedBy": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "code", "userId", "purpose", "status", "createdAt"]
+    },
+    "SecretAccessLog": {
+      "title": "SecretAccessLog",
+      "description": "Audit logs for secret code access",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "codeId": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "userId", "codeId", "timestamp"]
+    },
+    "Result": {
+      "title": "Result",
+      "description": "Owner-scoped final AI results retained with Firestore TTL",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "type": { "type": "string" },
+        "data": { "type": "string" },
+        "sourceTool": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "expiresAt": { "type": "string" },
+        "planAtCreation": { "type": "string" },
+        "retentionDaysAtCreation": { "type": "number" },
+        "retentionPolicyVersion": { "type": "string" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "userId", "title", "type", "data", "sourceTool", "createdAt", "expiresAt"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Billing and donation transactions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "type": { "type": "string", "enum": ["subscription", "donation"] },
+        "planId": { "type": "string" },
+        "amount": { "type": "number" },
+        "currency": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "paid", "failed", "cancelled"] },
+        "provider": { "type": "string" },
+        "providerTransactionId": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "type", "amount", "currency", "status", "createdAt"]
+    },
+    "Activity": {
+      "title": "Activity",
+      "description": "User activity logs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "type": { "type": "string" },
+        "description": { "type": "string" },
+        "timestamp": { "type": "string" }
+      }
+    },
+    "UserRequest": {
+      "title": "UserRequest",
+      "description": "Support and limit increase requests",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "type": { "type": "string" },
+        "message": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "adminResponse": { "type": "string" }
+      }
+    },
+    "InternalMessage": {
+      "title": "InternalMessage",
+      "description": "In-app messages, notifications, popups, and toasts",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "type": { "type": "string", "enum": ["message", "notification", "popup", "toast"] },
+        "purpose": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "code": { "type": "string" },
+        "ctaLabel": { "type": "string" },
+        "ctaLink": { "type": "string" },
+        "read": { "type": "boolean" },
+        "dismissed": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "expiresAt": { "type": "string" },
+        "metadata": { "type": "object" }
+      },
+      "required": ["id", "userId", "type", "title", "message", "read", "createdAt"]
+    },
+    "InternalMessageLog": {
+      "title": "InternalMessageLog",
+      "description": "Audit logs for internal messages",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "purpose": { "type": "string" },
+        "senderId": { "type": "string" },
+        "recipientId": { "type": "string" },
+        "status": { "type": "string" },
+        "sentAt": { "type": "string" },
+        "details": { "type": "object" }
+      },
+      "required": ["id", "type", "senderId", "sentAt"]
+    },
+    "EmailTemplate": {
+      "title": "EmailTemplate",
+      "description": "Templates for email communication",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "purpose": { "type": "string" },
+        "subject": { "type": "string" },
+        "body": { "type": "string" },
+        "placeholders": { "type": "array", "items": { "type": "string" } },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "name", "purpose", "isActive"]
+    },
+    "EmailDeliveryLog": {
+      "title": "EmailDeliveryLog",
+      "description": "Audit logs for email delivery",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "templateId": { "type": "string" },
+        "recipientEmail": { "type": "string" },
+        "subject": { "type": "string" },
+        "status": { "type": "string" },
+        "errorMessage": { "type": "string" },
+        "sentAt": { "type": "string" }
+      },
+      "required": ["id", "recipientEmail", "status", "sentAt"]
+    },
+
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/activities/{activityId}": {
+      "schema": "Activity",
+      "description": "Global activity logs"
+    },
+    "/requests/{requestId}": {
+      "schema": "UserRequest",
+      "description": "User support requests"
+    },
+    "/internal_communications/{commId}": {
+      "schema": "InternalMessage",
+      "description": "User-specific internal communications"
+    },
+    "/internal_communication_logs/{logId}": {
+      "schema": "InternalMessageLog",
+      "description": "Audit logs for internal messages"
+    },
+    "/email_templates/{templateId}": {
+      "schema": "EmailTemplate",
+      "description": "Templates for email communication"
+    },
+    "/email_delivery_logs/{logId}": {
+      "schema": "EmailDeliveryLog",
+      "description": "Audit logs for email delivery"
+    },
+    "/giftCodes/{codeId}": {
+      "schema": "GiftCode",
+      "description": "Redeemable gift codes"
+    },
+    "/secretCodes/{codeId}": {
+      "schema": "SecretCode",
+      "description": "Redeemable secret codes"
+    },
+    "/secretAccessLogs/{logId}": {
+      "schema": "SecretAccessLog",
+      "description": "Audit logs for secret code access"
+    },
+    "/results/{resultId}": {
+      "schema": "Result",
+      "description": "Stored user results"
+    },
+    "/transactions/{transactionId}": {
+      "schema": "Transaction",
+      "description": "Billing transactions"
+    }
+  }
+}

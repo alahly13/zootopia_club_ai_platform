@@ -1,0 +1,88 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.admin == true ||
+        request.auth.token.role == 'admin' ||
+        request.auth.token.role == 'Admin' ||
+        request.auth.token.email == 'alahlyeagle13@gmail.com' ||
+        request.auth.token.email == 'alahlyeagle@gmail.com' ||
+        request.auth.token.email == 'elmahdy@admin.com'
+      );
+    }
+
+    function isAvatarOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAvatarUpload() {
+      return request.resource != null
+        && request.resource.contentType.matches('image/.*')
+        && request.resource.size <= 5 * 1024 * 1024;
+    }
+
+    function isCommunicationAssetUpload() {
+      return request.resource != null
+        && request.resource.size <= 20 * 1024 * 1024;
+    }
+
+    function isGeneratedAssetUpload() {
+      return request.resource != null
+        && request.resource.size <= 25 * 1024 * 1024
+        && (
+          request.resource.contentType.matches('image/.*') ||
+          request.resource.contentType.matches('video/.*') ||
+          request.resource.contentType.matches('audio/.*') ||
+          request.resource.contentType == 'application/pdf' ||
+          request.resource.contentType == 'application/json' ||
+          request.resource.contentType == 'text/plain' ||
+          request.resource.contentType == 'text/markdown' ||
+          request.resource.contentType == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        );
+    }
+
+    match /avatars/{userId}/{allPaths=**} {
+      // Security-sensitive rule:
+      // Keep owner + admin read access to preserve account/profile/admin UX while
+      // preventing broad authenticated access to all user avatar paths.
+      allow read: if isAvatarOwner(userId) || isAdmin();
+
+      // Allow owner deletes, but only allow create/update for image uploads
+      // within a safe size envelope.
+      allow write: if isAvatarOwner(userId)
+        && (
+          request.method == 'delete'
+          || isAvatarUpload()
+        );
+    }
+
+    match /communication_assets/{allPaths=**} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin()
+        && (
+          request.method == 'delete'
+          || isCommunicationAssetUpload()
+        );
+    }
+
+    match /generated_assets/{userId}/{allPaths=**} {
+      // Generated assets must remain user-owned so saved image/library/editor
+      // flows survive refreshes without exposing other users' media.
+      allow read: if isAvatarOwner(userId) || isAdmin();
+      allow write: if (isAvatarOwner(userId) || isAdmin())
+        && (
+          request.method == 'delete'
+          || isGeneratedAssetUpload()
+        );
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if isAdmin();
+    }
+  }
+}

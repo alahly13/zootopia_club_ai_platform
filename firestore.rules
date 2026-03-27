@@ -1,0 +1,451 @@
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper functions
+    // ===============================================================
+
+    // Checks whether the request is authenticated.
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Checks whether the current user owns the target userId.
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Returns the current signed-in user's Firestore profile path.
+    function currentUserPath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+
+    // Checks whether the current user's Firestore profile exists.
+    function currentUserExists() {
+      return isSignedIn() && exists(currentUserPath());
+    }
+
+    // Returns the current user's Firestore profile document.
+    function currentUserDoc() {
+      return get(currentUserPath());
+    }
+
+    // Safe role getter from Firestore user document.
+    function userRole() {
+      return currentUserExists() && currentUserDoc().data.role != null
+        ? currentUserDoc().data.role
+        : null;
+    }
+
+    // Safe admin level getter from Firestore user document.
+    function userAdminLevel() {
+      return currentUserExists() && currentUserDoc().data.adminLevel != null
+        ? currentUserDoc().data.adminLevel
+        : null;
+    }
+
+    // Safe status getter from Firestore user document.
+    function userStatus() {
+      return currentUserExists() && currentUserDoc().data.accountStatus != null
+        ? currentUserDoc().data.accountStatus
+        : (
+            currentUserExists() && currentUserDoc().data.status != null
+            ? currentUserDoc().data.status
+            : "active"
+          );
+    }
+
+    // Admin detection from custom claims.
+    function isAdminByClaim() {
+      return isSignedIn() && (
+        request.auth.token.admin == true ||
+        request.auth.token.role == 'admin' ||
+        request.auth.token.role == 'Admin'
+      );
+    }
+
+    // Admin detection from Firestore user document.
+    function isAdminByUserDoc() {
+      return currentUserExists() && (
+        userRole() == 'admin' ||
+        userRole() == 'Admin'
+      );
+    }
+
+    // Combined admin check. Includes emergency fallback emails for safety.
+    function isAdmin() {
+      return isAdminByClaim() ||
+        isAdminByUserDoc() ||
+        (
+          isSignedIn() && (
+            request.auth.token.email == 'alahlyeagle13@gmail.com' ||
+            request.auth.token.email == 'alahlyeagle@gmail.com' ||
+            request.auth.token.email == 'elmahdy@admin.com'
+          )
+        );
+    }
+
+    // Primary admin check.
+    function isPrimaryAdmin() {
+      return isAdmin() && (
+        request.auth.token.adminLevel == 'primary' ||
+        userAdminLevel() == 'primary'
+      );
+    }
+
+    // Approved user check. Admin always passes.
+    function isApprovedUser() {
+      return isSignedIn() && (
+        isAdmin() ||
+        userStatus() == 'active' ||
+        userStatus() == 'Active'
+      );
+    }
+
+    // Basic username validation.
+    function isValidUsername(username) {
+      return username is string
+        && username.size() >= 3
+        && username.size() <= 30;
+    }
+
+    // Basic email validation.
+    function isValidEmail(email) {
+      return email is string && email.size() > 3;
+    }
+
+    // Validation for initial user document creation.
+    function isValidUserCreate(uid) {
+      return request.resource.data.id == uid
+        && isValidEmail(request.resource.data.email)
+        && (
+          !('username' in request.resource.data) ||
+          request.resource.data.username == "" ||
+          (
+            isValidUsername(request.resource.data.username) &&
+            request.resource.data.usernameLower == request.resource.data.username.lower()
+          )
+        )
+        && request.resource.data.createdAt != null
+        // Prevent privilege escalation during self-creation.
+        && (
+          !('role' in request.resource.data) ||
+          request.resource.data.role == 'user' ||
+          request.resource.data.role == 'User'
+        )
+        && (
+          !('adminLevel' in request.resource.data) ||
+          request.resource.data.adminLevel == null
+        );
+    }
+
+    // Only safe profile fields that users may edit themselves.
+    // IMPORTANT: sensitive fields such as role, adminLevel, credits,
+    // usage, permissions, authProviders, moderation status must NOT
+    // be self-editable from the client.
+    function userEditableFieldsOnly() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        'name',
+        'picture',
+        'bio',
+        'phone',
+        'country',
+        'city',
+        'language',
+        'theme',
+        'updatedAt',
+        'lastSeenAt',
+        'lastLogin',
+        'username',
+        'usernameLower'
+      ]);
+    }
+
+    // Validation for safe user self-updates.
+    function isValidUserSelfUpdate(uid) {
+      return request.resource.data.id == uid
+        && isValidEmail(request.resource.data.email)
+        && (
+          !('username' in request.resource.data) ||
+          request.resource.data.username == "" ||
+          (
+            isValidUsername(request.resource.data.username) &&
+            request.resource.data.usernameLower == request.resource.data.username.lower()
+          )
+        )
+        && userEditableFieldsOnly();
+    }
+
+    // Shared ownership helper for user-scoped documents.
+    function isResourceOwnedByCurrentUser(fieldName) {
+      return isSignedIn() && resource.data[fieldName] == request.auth.uid;
+    }
+
+    // Shared creation helper for user-scoped documents.
+    function isCreatingForSelf(fieldName) {
+      return isSignedIn() && request.resource.data[fieldName] == request.auth.uid;
+    }
+
+    // ===============================================================
+    // Users
+    // ===============================================================
+
+    match /users/{userId} {
+      // Owner can read own profile. Admin can read any profile.
+      allow get: if isOwner(userId) || isAdmin();
+
+      // Only admin may list all users.
+      allow list: if isAdmin();
+
+      // User may create only their own initial profile document.
+      allow create: if isOwner(userId) && isValidUserCreate(userId);
+
+      // User may update only safe profile fields on their own document.
+      // Admin may update any user document.
+      allow update: if (isOwner(userId) && isValidUserSelfUpdate(userId)) || isAdmin();
+
+      // Only primary admin may delete user documents.
+      allow delete: if isPrimaryAdmin();
+    }
+
+    match /userSettings/{uid} {
+      allow get: if isOwner(uid) || isAdmin();
+      allow list: if isAdmin();
+      allow create, update: if isOwner(uid) || isAdmin();
+      allow delete: if isPrimaryAdmin();
+    }
+
+    // ===============================================================
+    // Activity / Requests / User history
+    // ===============================================================
+
+    match /activities/{activityId} {
+      allow get: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+
+      // Admin can list all. Normal users should not list the whole collection.
+      allow list: if isAdmin();
+
+      allow create: if isCreatingForSelf('userId');
+      allow update, delete: if isAdmin();
+    }
+
+    match /requests/{requestId} {
+      allow get: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+
+      // Admin can list all requests.
+      allow list: if isAdmin();
+
+      allow create: if isCreatingForSelf('userId');
+      allow update, delete: if isAdmin();
+    }
+
+    match /userHistory/{historyId} {
+      allow get: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+      allow list: if isAdmin();
+      allow create: if isCreatingForSelf('userId');
+      allow update, delete: if isAdmin();
+    }
+
+    match /quizHistory/{quizId} {
+      allow get: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+      allow list: if isAdmin();
+      allow create: if isApprovedUser() && isCreatingForSelf('userId');
+      allow update, delete: if isAdmin();
+    }
+
+    // ===============================================================
+    // Notifications / Inbox
+    // ===============================================================
+
+    match /notifications/{notificationId} {
+      allow get: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+
+      // Admin can list all; users should read theirs via filtered access/get.
+      allow list: if isAdmin();
+
+      // Notifications are system/admin-created.
+      allow create: if isAdmin();
+
+      // User may update their own notification state (read/dismiss), admin may update all.
+      allow update: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+
+      allow delete: if isAdmin();
+    }
+
+    match /inbox/{messageId} {
+      // Users can read only their own inbox documents.
+      allow get: if isSignedIn() && resource.data.recipientUserId == request.auth.uid;
+
+      // Users can query/list only through client logic that targets their own docs.
+      // Rule remains user-signed-in because Firestore evaluates document-level access too.
+      allow list: if isSignedIn();
+
+      // Inbox writes should happen through trusted backend/Admin SDK only.
+      allow create: if false;
+
+      // Recipient can update own inbox state (read/archive/etc).
+      allow update: if isSignedIn() && resource.data.recipientUserId == request.auth.uid;
+
+      // Client-side delete disabled by default for safety.
+      // If your UI needs user-side delete later, enable carefully.
+      allow delete: if false;
+    }
+
+    match /admin_inbox/{messageId} {
+      allow get: if isAdmin();
+      allow list: if isAdmin();
+
+      // Admin inbox should also be written by trusted backend/Admin SDK only.
+      allow create: if false;
+
+      allow update, delete: if isAdmin();
+    }
+
+    // ===============================================================
+    // Uploads / Outputs / Results / Generated Assets
+    // ===============================================================
+
+    match /uploads/{uploadId} {
+      allow get: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+      allow list: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+      allow create: if isApprovedUser() && isCreatingForSelf('userId');
+      allow update, delete: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+    }
+
+    match /generatedOutputs/{outputId} {
+      // Canonical generated asset metadata lives here. Binary payloads belong in
+      // Firebase Storage, while this document stores user ownership, retention,
+      // version lineage, and open-by-id metadata.
+      allow get: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+      allow list: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+      allow create: if isApprovedUser() && isCreatingForSelf('userId');
+      allow update, delete: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+    }
+
+    match /image_edit_sessions/{sessionId} {
+      allow get: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+      allow list: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+      allow create: if isApprovedUser() && isCreatingForSelf('userId');
+      allow update, delete: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+    }
+
+    match /results/{resultId} {
+      allow get: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+      allow list: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+      allow create: if isApprovedUser() && isCreatingForSelf('userId');
+      allow update, delete: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+    }
+
+    // ===============================================================
+    // Email system
+    // ===============================================================
+
+    match /email_templates/{templateId} {
+      allow get, list, create, update, delete: if isAdmin();
+    }
+
+    match /email_delivery_logs/{logId} {
+      allow get, list, create, update, delete: if isAdmin();
+    }
+
+    // ===============================================================
+    // Internal messaging system
+    // ===============================================================
+
+    match /internal_communications/{commId} {
+      allow get: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+      allow list: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+      allow create: if isAdmin();
+      allow update: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+      allow delete: if isAdmin();
+    }
+
+    match /internal_communication_logs/{logId} {
+      allow get, list, create, update, delete: if isAdmin();
+    }
+
+    match /internal_message_templates/{templateId} {
+      allow get, list, create, update, delete: if isAdmin();
+    }
+
+    // ===============================================================
+    // Gift / Secret / Unlock / Access codes
+    // ===============================================================
+
+    match /giftCodes/{codeId} {
+      allow get, list, create, update, delete: if isAdmin();
+    }
+
+    match /secretCodes/{codeId} {
+      allow get, list, create, update, delete: if isAdmin();
+    }
+
+    match /unlockCodes/{codeId} {
+      allow get, list, create, update, delete: if isAdmin();
+    }
+
+    // ===============================================================
+    // Chat Center
+    // ===============================================================
+
+    match /admin_chat_threads/{threadId} {
+      allow get: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+      allow list: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+      allow create: if isAdmin() || isCreatingForSelf('userId');
+      allow update: if isAdmin();
+      allow delete: if isPrimaryAdmin();
+    }
+
+    match /admin_chat_messages/{messageId} {
+      allow get: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+      allow list: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+      allow create: if isAdmin() || isCreatingForSelf('userId');
+      allow update: if isAdmin();
+      allow delete: if isPrimaryAdmin();
+    }
+
+    // ===============================================================
+    // Billing / subscriptions / refunds / monitoring
+    // ===============================================================
+
+    match /billing_sessions/{sessionId} {
+      allow get: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+      allow list: if isAdmin();
+      allow create: if isCreatingForSelf('userId');
+      allow update, delete: if isAdmin();
+    }
+
+    match /subscriptions/{subscriptionId} {
+      allow get: if isAdmin() || isResourceOwnedByCurrentUser('userId');
+      allow list: if isAdmin();
+      allow create: if isCreatingForSelf('userId');
+      allow update, delete: if isAdmin();
+    }
+
+    match /refunds/{refundId} {
+      allow get, list, create, update, delete: if isAdmin();
+    }
+
+    match /provider_usage/{docId} {
+      allow get, list, create, update, delete: if isAdmin();
+    }
+
+    match /monitoring/{docId} {
+      allow get, list, create, update, delete: if isAdmin();
+    }
+
+    match /adminLogs/{docId} {
+      allow get, list, create, update, delete: if isAdmin();
+    }
+
+    // ===============================================================
+    // Default deny
+    // ===============================================================
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

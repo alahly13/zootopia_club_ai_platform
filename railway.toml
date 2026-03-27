@@ -1,0 +1,11 @@
+# Railway uses the Dockerfile so the Node server and Python extraction worker
+# stay inside one explicit runtime instead of relying on buildpack guessing.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/api/health"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

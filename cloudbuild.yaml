@@ -1,0 +1,31 @@
+# Cloud Run source deployments build the shared Docker backend image so the
+# Python extraction worker stays coupled to the Node service intentionally.
+substitutions:
+  _IMAGE_URI: us-central1-docker.pkg.dev/$PROJECT_ID/zootopia-club-ai/zootopia-club-ai
+  _SERVICE_NAME: zootopia-club-ai
+  _REGION: us-central1
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_IMAGE_URI}
+      - .
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_IMAGE_URI}
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE_NAME}
+      - --image=${_IMAGE_URI}
+      - --region=${_REGION}
+      - --platform=managed
+      - --allow-unauthenticated
+
+images:
+  - ${_IMAGE_URI}

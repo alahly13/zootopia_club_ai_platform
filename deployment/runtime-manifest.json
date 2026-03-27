@@ -1,0 +1,55 @@
+{
+  "appName": "zootopia-club-ai",
+  "backend": {
+    "entryPoint": "server.ts",
+    "healthcheckPath": "/api/health",
+    "startCommand": "npm run start",
+    "defaultPort": 3000
+  },
+  "frontend": {
+    "buildCommand": "npm run build",
+    "outputDirectory": "dist"
+  },
+  "python": {
+    "requirementsPath": "server/documentRuntime/python/requirements.txt",
+    "workerScriptPath": "server/documentRuntime/python/extract_document.py",
+    "venvDirectory": ".venv",
+    "requiredPackages": [
+      {
+        "name": "pypdf",
+        "module": "pypdf"
+      },
+      {
+        "name": "python-docx",
+        "module": "docx"
+      },
+      {
+        "name": "openpyxl",
+        "module": "openpyxl"
+      },
+      {
+        "name": "paddleocr",
+        "module": "paddleocr"
+      },
+      {
+        "name": "docling",
+        "module": "docling"
+      }
+    ]
+  },
+  "platformIntent": {
+    "backendCapable": [
+      "local-development",
+      "generic-linux-server",
+      "render",
+      "railway",
+      "fly.io",
+      "google-cloud-run",
+      "docker"
+    ],
+    "frontendOnly": [
+      "netlify",
+      "vercel"
+    ]
+  }
+}

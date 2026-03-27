@@ -1,0 +1,18 @@
+# Fly.io also deploys the shared Docker backend so the same Node + Python
+# extraction runtime travels across environments without per-platform drift.
+app = "zootopia-club-ai"
+primary_region = "iad"
+
+[build]
+dockerfile = "Dockerfile"
+
+[env]
+NODE_ENV = "production"
+DOCUMENT_RUNTIME_PYTHON_EXECUTABLE = "/app/.venv/bin/python"
+
+[http_service]
+internal_port = 3000
+force_https = true
+auto_start_machines = true
+auto_stop_machines = "stop"
+min_machines_running = 0

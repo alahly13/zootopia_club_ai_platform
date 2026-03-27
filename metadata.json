@@ -1,0 +1,5 @@
+{
+  "name": "Zootopia Club | AI Science Education Platform",
+  "description": "A highly professional AI-powered platform for science education, document analysis, and interactive study tools.",
+  "requestFramePermissions": ["camera", "microphone"]
+}

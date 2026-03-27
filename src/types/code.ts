@@ -1,0 +1,44 @@
+export type CodeType = 'singleUse' | 'reusable' | 'limitedUse';
+export type CodeStatus = 'draft' | 'active' | 'paused' | 'revoked' | 'expired' | 'consumed' | 'completed' | 'archived';
+export type DeliveryChannel = 'internal' | 'email' | 'both';
+
+export interface IssuedCode {
+  id: string;
+  codeValue: string;
+  codeType: CodeType;
+  purpose: string;
+  targetAction?: string;
+  title?: string;
+  description?: string;
+  notes?: string;
+  recipientUserId?: string;
+  recipientEmail?: string;
+  recipientUsername?: string;
+  issuedByAdminId: string;
+  issuedByAdminName: string;
+  issuedAt: string;
+  expiresAt?: string;
+  neverExpires: boolean;
+  usageMode: 'single-use' | 'limited-use' | 'unlimited-use';
+  maxUses?: number;
+  currentUses: number;
+  remainingUses?: number;
+  status: CodeStatus;
+  redeemed: boolean;
+  redeemedAt?: string;
+  redeemedByUserId?: string;
+  redemptionCount: number;
+  revokedAt?: string;
+  revokedBy?: string;
+  pausedAt?: string;
+  pausedBy?: string;
+  lastValidationAt?: string;
+  deliveryChannel: DeliveryChannel;
+  messageType?: string;
+  templateId?: string;
+  metadata?: Record<string, any>;
+  resultPayload?: Record<string, any>;
+  successPayload?: Record<string, any>;
+  createdAt: string;
+  updatedAt: string;
+}

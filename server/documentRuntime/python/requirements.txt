@@ -1,0 +1,5 @@
+pypdf==6.9.2
+python-docx==1.2.0
+openpyxl==3.1.5
+paddleocr==3.4.0
+docling==2.82.0

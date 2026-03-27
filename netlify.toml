@@ -1,0 +1,14 @@
+# Netlify is configured explicitly as frontend-only hosting in the current
+# architecture. The backend Express server and Python extraction worker do not
+# run on Netlify in this repository layout.
+[build]
+  command = "npm run deploy:netlify:build"
+  publish = "dist"
+
+[build.environment]
+  NPM_FLAGS = "--include=dev"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
