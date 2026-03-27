@@ -5386,3 +5386,105 @@ pm run build\ successfully.
       - `src/utils/exporters.ts`
       - `tests/adminAccountDirectoryService.test.ts`
     - The auth/session/document-runtime changes from this pass no longer appear in the remaining `tsc --noEmit` error list.
+
+[2026-03-27] Layered Document Extraction Runtime Upgrade
+- Area:
+  - Document runtime extraction, shared prepared-document persistence, prompt-context resolution, and refresh-safe client rehydration.
+- Files:
+  - `server/documentRuntime/python/extract_document.py`
+  - `server/documentRuntime/nativeExtractionService.ts`
+  - `server/documentRuntime/ocrExtractionService.ts`
+  - `server/documentRuntime/extractionCoordinator.ts`
+  - `server/documentRuntime/fileTypeDetectionService.ts`
+  - `server/documentRuntime/promptContextAssembler.ts`
+  - `server/documentRuntime/documentIntakeService.ts`
+  - `server/documentRuntime/pythonDocumentWorker.ts`
+  - `src/ai/services/aiExecutor.ts`
+  - `src/components/AuthScopedDocumentBoundary.tsx`
+  - `src/contexts/DocumentContext.tsx`
+  - `src/contexts/documentState.ts`
+  - `src/services/documentRuntimeService.ts`
+  - `tests/documentState.test.ts`
+- Root Cause:
+  - The Python extractor contract was too shallow and internally duplicated, which made extraction quality improvements hard to trust and hard for the TypeScript runtime to consume consistently.
+  - Mixed PDFs could still miss OCR in practice because file-type strategy selection was based on whole-document density and frontend Gemini execution did not resolve the authoritative shared `documentContextRef`.
+  - Refresh/reload recovery was incomplete because the in-memory document context treated the browser `File` object as a prerequisite for readiness even after a prepared artifact had already been persisted in the shared runtime.
+- Summary:
+  - Reworked the live Python extractor path into a richer layered contract that records extractor chains, fallback chains, warnings, page counts, text length, OCR usage, and per-unit metadata while keeping the existing runtime architecture intact.
+  - Added a late PDF OCR fallback in the extraction coordinator so native-first PDFs with weak pages can still merge in OCR text safely instead of silently shipping sparse pages downstream.
+  - Made frontend Gemini execution resolve prepared document context from `/api/documents/:documentId/context`, aligning frontend prompt assembly with the same shared prepared artifact used by backend `/api/ai/execute`.
+  - Added refresh-safe active-document rehydration from `/api/documents/active` and updated document readiness rules so prepared documents remain `ready` without requiring the original browser `File`.
+- Technical Details:
+  - Python layered extractor:
+    - `extract_document.py` now emits richer extraction payloads with:
+      - `engine`
+      - `pages`
+      - `fullText`
+      - `notes`
+      - `warnings`
+      - `extractorChain`
+      - `fallbackChain`
+      - `pageCount`
+      - `textLength`
+      - `metadata`
+      - `ocrBlocks`
+      - `ocrUsed`
+    - PDF native extraction keeps explicit page numbering and records weak pages for later OCR decisions.
+    - DOCX extraction walks the XML body in real author order so paragraphs and tables stay in logical sequence instead of being split into separate passes.
+    - XLSX/CSV extraction stays sheet-aware, preserves sheet names and row order, and emits structured sheet blocks rather than a single raw grid dump.
+    - PaddleOCR extraction records OCR block metadata, block confidence, page labels, and OCR warnings when no readable blocks are produced.
+    - Docling is treated as a layout-aware supplement/fallback layer rather than a blind replacement:
+      - preload when file type / mode makes sense
+      - supplement weak native pages
+      - fill OCR gaps
+      - persist docling notes/warnings and extractor metadata
+  - Fallback behavior:
+    - `fileTypeDetectionService.ts` now tracks sparse PDF pages and biases those PDFs toward `pdf_hybrid_merge` even when total document coverage looks acceptable at a glance.
+    - `extractionCoordinator.ts` adds a targeted late OCR pass for native-selected PDFs when Python/native metadata still reports weak pages.
+    - Coordinator extraction metadata now stores:
+      - `extractorChain`
+      - `fallbackChain`
+      - `warnings`
+      - `qualitySignals`
+      - `extractionDetails`
+      - late PDF OCR attempt state
+  - Runtime persistence:
+    - `documentIntakeService.ts` now writes extractor-chain and fallback-chain slices into ready-state runtime metadata and logs richer persistence diagnostics on ready/cancel/fail.
+    - Prepared artifacts still flow through the existing authoritative path:
+      - intake API
+      - extraction coordinator
+      - document structure normalizer
+      - artifact storage
+      - artifact store
+      - runtime active-document state
+    - No parallel document runtime was introduced.
+  - Prompt orchestration / tool consumption:
+    - `promptContextAssembler.ts` now exposes extractor/fallback lineage inside assembled metadata and summary/insight strings so downstream tools can debug which layers produced the prepared text.
+    - `aiExecutor.ts` now resolves `documentContextRef` through the shared backend prompt-context API before frontend Gemini orchestration, so tools such as quiz/study/chat paths can consume the same prepared extracted text instead of clipped local-only context.
+  - Refresh / shared availability:
+    - `documentRuntimeService.ts` now exposes `fetchDocumentPromptContext(...)`.
+    - `AuthScopedDocumentBoundary.tsx` rehydrates the active prepared document from `/api/documents/active` when the auth-scoped React mirror is empty.
+    - `documentState.ts` and `DocumentContext.tsx` now allow a prepared document to remain `ready` when it has persisted document identity plus extracted/context text, even if `file === null`.
+- Observability:
+  - Added/expanded structured logs for:
+    - file-type detection
+    - extraction completion
+    - empty extraction failure
+    - persistence-ready
+    - persistence-cancelled
+    - persistence-failed
+  - Logged details now include page/section counts, weak PDF pages, OCR usage, extractor chain, fallback chain, warnings, and processing pathway.
+- Verification:
+  - Passed:
+    - `python -m py_compile server\documentRuntime\python\extract_document.py`
+    - direct Python extractor smoke on `sample.txt`, confirming the new native payload shape (`warnings`, `extractorChain`, `pageCount`, `textLength`, `metadata`, capabilities, attempted layers)
+    - escalated TypeScript import smoke over changed runtime modules (`import-smoke-ok`)
+    - escalated TypeScript behavior smoke covering:
+      - prepared-document rehydration readiness without a browser `File`
+      - prompt-context metadata propagation for extractor/fallback chains (`ts-smoke-ok`)
+  - Incomplete / environment-limited:
+    - `tsx --test` document-runtime suites could not complete within the available execution window after sandbox spawn restrictions were removed.
+    - `tsc --noEmit` / repo `npm run lint` did not finish within the available timeout budget in this environment, so full-project typecheck confirmation remains outstanding.
+- Notes:
+  - The repository already contained unrelated modified files before/during this pass; this entry only covers the owner files listed above.
+  - The requested `documentPromptContextResolver.ts` and `documentCleanupCoordinator.ts` owner names do not exist in this repo; the real live owners are `promptContextResolver.ts` and `cleanupCoordinator.ts`.

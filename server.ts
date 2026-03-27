@@ -52,6 +52,7 @@ import { DocumentIntakeService } from './server/documentRuntime/documentIntakeSe
 import { CleanupCoordinator } from './server/documentRuntime/cleanupCoordinator.js';
 import { PromptContextResolver } from './server/documentRuntime/promptContextResolver.js';
 import { DirectModelFileDispatchService } from './server/documentRuntime/directModelFileDispatchService.js';
+import { runtimeStateService } from './server/documentRuntime/runtimeStateService.js';
 import {
   CANONICAL_UNLOCK_ELIGIBLE_TOOL_IDS,
   CANONICAL_UNLOCK_PRICE_EGP,
@@ -1977,6 +1978,69 @@ const logAdminUserAction = async (
       }
     }
   );
+
+  app.get('/api/documents/active', authMiddleware, async (req, res) => {
+    try {
+      const actor = resolveDocumentActorContextFromRequest(req);
+      const active = await runtimeStateService.getActiveDocument(actor);
+
+      if (!active?.documentId) {
+        return res.json({
+          success: true,
+          activeDocument: null,
+        });
+      }
+
+      try {
+        const resolved = await documentArtifactStore.getArtifactForDocument(actor, active.documentId);
+        return res.json({
+          success: true,
+          activeDocument: active,
+          document: resolved.document,
+          artifact: resolved.artifact,
+          payload: {
+            artifactId: resolved.payload.artifactId,
+            documentId: resolved.payload.documentId,
+            workflowId: resolved.payload.workflowId,
+            sourceFileId: resolved.payload.sourceFileId,
+            sourceFileName: resolved.payload.sourceFileName,
+            sourceMimeType: resolved.payload.sourceMimeType,
+            fileType: resolved.payload.fileType,
+            normalizedText: resolved.payload.normalizedText,
+            normalizedMarkdown: resolved.payload.normalizedMarkdown,
+            headingTree: resolved.payload.headingTree,
+            pageMap: resolved.payload.pageMap,
+            extractionMeta: resolved.payload.extractionMeta,
+            languageHints: resolved.payload.languageHints,
+            pageSegments: resolved.payload.pageSegments,
+            sourceAttribution: resolved.payload.sourceAttribution,
+          },
+        });
+      } catch (error: any) {
+        const message = normalizeOptionalString(error?.message) || 'document-active-load-failed';
+        if (
+          message === 'DOCUMENT_NOT_FOUND' ||
+          message === 'DOCUMENT_ARTIFACT_NOT_READY' ||
+          message === 'DOCUMENT_ARTIFACT_EXPIRED'
+        ) {
+          await runtimeStateService.clearActiveDocument(actor);
+          return res.json({
+            success: true,
+            activeDocument: null,
+          });
+        }
+
+        throw error;
+      }
+    } catch (error: any) {
+      const message = normalizeOptionalString(error?.message) || 'document-active-load-failed';
+      const status = message === 'DOCUMENT_ACCESS_DENIED' ? 403 : 404;
+      return res.status(status).json({
+        success: false,
+        error: message,
+      });
+    }
+  });
 
   app.get('/api/documents/:documentId/artifact', authMiddleware, async (req, res) => {
     try {

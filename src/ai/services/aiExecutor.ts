@@ -12,6 +12,7 @@ import { PromptOrchestrator } from './promptOrchestrator';
 import { aiCache } from './cacheService';
 import { auth } from '../../firebase';
 import { getFallbackPlan } from '../fallbackPolicy';
+import { fetchDocumentPromptContext } from '../../services/documentRuntimeService';
 import {
   AI_CLIENT_EXECUTION_TIMEOUT_MS,
   AI_PROVIDER_EXECUTION_TIMEOUT_MS,
@@ -588,6 +589,51 @@ export class AIExecutor {
       let imagePart = null;
       let textContent = rawTextContent;
       let fileContextContent = options.fileContext;
+      let additionalContextContent = options.additionalContext;
+
+      if (options.documentContextRef?.documentId) {
+        try {
+          const sharedDocumentContext = await fetchDocumentPromptContext({
+            documentId: options.documentContextRef.documentId,
+            toolId: options.toolId,
+            mode: options.mode,
+          });
+
+          fileContextContent = sharedDocumentContext.fileContext || fileContextContent;
+
+          const existingAdditionalContext =
+            options.additionalContext && typeof options.additionalContext === 'object'
+              ? options.additionalContext as Record<string, unknown>
+              : {};
+          const resolvedAdditionalContext =
+            sharedDocumentContext.additionalContext &&
+            typeof sharedDocumentContext.additionalContext === 'object'
+              ? sharedDocumentContext.additionalContext as Record<string, unknown>
+              : {};
+          const existingMetadata =
+            existingAdditionalContext.metadata &&
+            typeof existingAdditionalContext.metadata === 'object'
+              ? existingAdditionalContext.metadata as Record<string, unknown>
+              : {};
+          const resolvedMetadata =
+            resolvedAdditionalContext.metadata &&
+            typeof resolvedAdditionalContext.metadata === 'object'
+              ? resolvedAdditionalContext.metadata as Record<string, unknown>
+              : {};
+
+          additionalContextContent = {
+            ...existingAdditionalContext,
+            ...resolvedAdditionalContext,
+            metadata: {
+              ...existingMetadata,
+              ...resolvedMetadata,
+              documentContextSource: 'shared_runtime',
+            },
+          };
+        } catch (error) {
+          console.warn('Failed to load shared document context for frontend execution', error);
+        }
+      }
       
       // Check for embedded image data from fileProcessors in user prompt
       const imageMatch = rawTextContent.match(/\[IMAGE_DATA:(.*?);base64,(.*?)\]/);
@@ -627,7 +673,7 @@ export class AIExecutor {
           settings: options.settings,
           fileContext: fileContextContent,
           fileName: options.fileName,
-          additionalContext: options.additionalContext,
+          additionalContext: additionalContextContent,
           promptTemplateGroup: context.promptTemplateGroup
         }
       );

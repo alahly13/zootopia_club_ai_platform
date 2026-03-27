@@ -3,6 +3,7 @@ import {
   normalizeUploadExtension,
   validateUploadDescriptor,
 } from '../../src/upload/documentFilePolicy.js';
+import { logDiagnostic } from '../diagnostics.js';
 import { extractDocumentArtifact } from './extractionEngine.js';
 import { runtimeStateService } from './runtimeStateService.js';
 import { jobOrchestrationService } from './jobOrchestrationService.js';
@@ -25,6 +26,7 @@ export class DocumentIntakeService {
     const documentId = crypto.randomUUID();
     const workflowId = crypto.randomUUID();
     const operationId = `doc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const traceId = `${documentId}:${operationId}`;
     const cancelledMessage = 'DOCUMENT_OPERATION_CANCELLED';
     const staleWriteMessage = 'DOCUMENT_RUNTIME_STALE_WRITE_BLOCKED';
     const strategy = resolveDocumentProcessingStrategy({
@@ -181,7 +183,37 @@ export class DocumentIntakeService {
           fileType: extracted.payload.fileType,
           extractionStrategy: extracted.payload.extractionStrategy,
           textLength: extracted.textLength,
+          pageCount: extracted.payload.pageSegments.length,
+          sectionCount: extracted.payload.structuredDocumentJson.sections.length,
+          ocrBlockCount: extracted.payload.ocrBlocks.length,
+          extractorChain:
+            ((extracted.payload.extractionMeta?.extractorChain as string[] | undefined) || []).slice(0, 20),
+          fallbackChain:
+            ((extracted.payload.extractionMeta?.fallbackChain as string[] | undefined) || []).slice(0, 20),
+          warnings:
+            ((extracted.payload.extractionMeta?.warnings as string[] | undefined) || []).slice(0, 20),
           updatedAt: new Date().toISOString(),
+        });
+
+        logDiagnostic('info', 'document_runtime.persistence_ready', {
+          area: 'document-runtime',
+          traceId,
+          stage: 'persist',
+          status: 'success',
+          details: {
+            documentId,
+            workflowId,
+            artifactId: artifact.artifactId,
+            fileName: input.fileName,
+            fileType: extracted.payload.fileType,
+            extractionStrategy: extracted.payload.extractionStrategy,
+            textLength: extracted.textLength,
+            pageCount: extracted.payload.pageSegments.length,
+            sectionCount: extracted.payload.structuredDocumentJson.sections.length,
+            extractorChain: extracted.payload.extractionMeta?.extractorChain || [],
+            fallbackChain: extracted.payload.extractionMeta?.fallbackChain || [],
+            processingPathway: strategy.pathway,
+          },
         });
 
         const operation = await jobOrchestrationService.patch(input.actor, operationId, {
@@ -240,6 +272,18 @@ export class DocumentIntakeService {
           }
 
           await runtimeStateService.clearCancellationRequest(input.actor, operationId);
+          logDiagnostic('info', 'document_runtime.persistence_cancelled', {
+            area: 'document-runtime',
+            traceId,
+            stage: 'cancelled',
+            status: 'cancelled',
+            details: {
+              documentId,
+              workflowId,
+              fileName: input.fileName,
+              processingPathway: strategy.pathway,
+            },
+          });
           throw new Error('File processing was cancelled.');
         }
 
@@ -257,6 +301,20 @@ export class DocumentIntakeService {
           });
           await documentWorkspaceStorage.removeDocumentWorkspace(input.actor, workflowId, documentId);
         }
+
+        logDiagnostic('error', 'document_runtime.persistence_failed', {
+          area: 'document-runtime',
+          traceId,
+          stage: 'failed',
+          status: 'failed',
+          details: {
+            documentId,
+            workflowId,
+            fileName: input.fileName,
+            processingPathway: strategy.pathway,
+            errorMessage,
+          },
+        });
 
         throw error;
       }

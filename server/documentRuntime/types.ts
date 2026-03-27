@@ -106,6 +106,7 @@ export interface DocumentStructuredBlock {
 export interface DocumentPageSegment {
   segmentId: string;
   pageNumber: number;
+  label?: string | null;
   text: string;
   kind: DocumentSegmentKind;
   headingCandidates: string[];
@@ -355,6 +356,7 @@ export interface PromptContextResolutionResult {
     pageMap?: string;
     headingTree?: string;
     ocr?: string;
+    warnings?: string;
   };
 }
 

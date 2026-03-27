@@ -19,6 +19,7 @@ export interface ToolConfig {
     structuredDocument?: string;
     pageMap?: string;
     headingTree?: string;
+    warnings?: string;
   };
   promptTemplateGroup?: string;
 }
@@ -199,6 +200,7 @@ Use a clear parent-child structure.`,
       if (config.additionalContext.pageMap) systemInstruction += `\n- Page Map: ${config.additionalContext.pageMap}`;
       if (config.additionalContext.headingTree) systemInstruction += `\n- Heading Tree: ${config.additionalContext.headingTree}`;
       if (config.additionalContext.ocr) systemInstruction += `\n- OCR Data: ${config.additionalContext.ocr}`;
+      if (config.additionalContext.warnings) systemInstruction += `\n- Extraction Warnings: ${config.additionalContext.warnings}`;
       if (config.additionalContext.metadata) systemInstruction += `\n- Metadata: ${JSON.stringify(config.additionalContext.metadata)}`;
     }
     

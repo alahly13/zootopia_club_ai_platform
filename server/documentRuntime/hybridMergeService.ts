@@ -91,6 +91,7 @@ export class HybridMergeService {
         return {
           segmentId: createSegmentId(pageNumber, mergedText, kind),
           pageNumber,
+          label: pair.native?.label || pair.ocr?.label || `Page ${pageNumber}`,
           text: mergedText,
           kind,
           headingCandidates,

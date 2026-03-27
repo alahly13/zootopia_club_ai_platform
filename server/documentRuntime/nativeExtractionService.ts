@@ -49,6 +49,12 @@ function toPageSegments(rawPages: unknown, fallbackKind: DocumentPageSegment['ki
       return {
         segmentId: createSegmentId(pageNumber, text, fallbackKind),
         pageNumber,
+        label:
+          typeof record.label === 'string' && record.label.trim()
+            ? record.label.trim()
+            : typeof record.unitLabel === 'string' && record.unitLabel.trim()
+              ? record.unitLabel.trim()
+              : null,
         text,
         kind: fallbackKind,
         headingCandidates,
@@ -87,6 +93,7 @@ async function extractPdfText(buffer: Buffer): Promise<DocumentPageSegment[]> {
       pageSegments.push({
         segmentId: createSegmentId(pageNumber, pageText, 'native'),
         pageNumber,
+        label: `Page ${pageNumber}`,
         text: pageText,
         kind: 'native',
         headingCandidates: blocks
@@ -119,6 +126,7 @@ async function extractDocxText(buffer: Buffer): Promise<DocumentPageSegment[]> {
   return [{
     segmentId: createSegmentId(1, text, 'native'),
     pageNumber: 1,
+    label: 'Section 1',
     text,
     kind: 'native',
     headingCandidates: blocks
@@ -144,6 +152,7 @@ function extractSpreadsheetText(buffer: Buffer): DocumentPageSegment[] {
     return {
       segmentId: createSegmentId(index + 1, text, 'native'),
       pageNumber: index + 1,
+      label: `Sheet ${index}: ${sheetName}`,
       text,
       kind: 'native' as const,
       headingCandidates: [sheetName],
@@ -165,6 +174,7 @@ function extractPlainText(buffer: Buffer): DocumentPageSegment[] {
   return [{
     segmentId: createSegmentId(1, text, 'native'),
     pageNumber: 1,
+    label: 'Section 1',
     text,
     kind: 'native',
     headingCandidates: blocks
@@ -176,7 +186,12 @@ function extractPlainText(buffer: Buffer): DocumentPageSegment[] {
   }];
 }
 
-function fromPageSegments(engine: string, pageSegments: DocumentPageSegment[], notes: string[] = []): NativeExtractionResult {
+function fromPageSegments(
+  engine: string,
+  pageSegments: DocumentPageSegment[],
+  notes: string[] = [],
+  raw: Record<string, unknown> | null = null
+): NativeExtractionResult {
   const fullText = normalizeWhitespace(pageSegments.map((segment) => segment.text).join('\n\n'));
 
   return {
@@ -188,6 +203,7 @@ function fromPageSegments(engine: string, pageSegments: DocumentPageSegment[], n
     notes,
     tablesDetected: pageSegments.reduce((sum, segment) => sum + segment.tableCount, 0),
     listsDetected: pageSegments.reduce((sum, segment) => sum + segment.listCount, 0),
+    raw,
   };
 }
 
@@ -198,13 +214,19 @@ export class NativeExtractionService {
   ): Promise<NativeExtractionResult | null> {
     const pythonPages = toPageSegments(pythonResponse?.native?.pages, 'native');
     if (pythonPages.length > 0) {
-      const notes = Array.isArray(pythonResponse?.native?.notes)
-        ? pythonResponse?.native?.notes.filter((item): item is string => typeof item === 'string')
-        : [];
+      const notes = [
+        ...(Array.isArray(pythonResponse?.native?.notes)
+          ? pythonResponse?.native?.notes.filter((item): item is string => typeof item === 'string')
+          : []),
+        ...(Array.isArray(pythonResponse?.native?.warnings)
+          ? pythonResponse?.native?.warnings.filter((item): item is string => typeof item === 'string')
+          : []),
+      ];
       return fromPageSegments(
         String(pythonResponse?.native?.engine || 'python-native'),
         pythonPages,
-        notes
+        notes,
+        (pythonResponse?.native as Record<string, unknown>) || null
       );
     }
 

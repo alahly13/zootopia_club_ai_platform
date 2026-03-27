@@ -23,6 +23,7 @@ type PythonWorkerExtractionResponse = {
   ocr?: Record<string, unknown> | null;
   docling?: Record<string, unknown> | null;
   notes?: string[];
+  warnings?: string[];
   errors?: string[];
   capabilities?: PythonWorkerCapabilities;
 };

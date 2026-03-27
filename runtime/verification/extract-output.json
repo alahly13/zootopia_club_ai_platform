@@ -1,0 +1,82 @@
+{
+  "ok": true,
+  "native": {
+    "engine": "python:text",
+    "pages": [
+      {
+        "pageNumber": 1,
+        "label": "Section 1",
+        "text": "Cell biology introduction",
+        "headingCandidates": [
+          "Cell biology introduction"
+        ],
+        "blocks": [
+          {
+            "blockId": "py-native-1-1",
+            "type": "title",
+            "source": "native",
+            "text": "Cell biology introduction",
+            "pageNumber": 1,
+            "order": 1,
+            "level": 1,
+            "rows": null,
+            "confidence": null,
+            "bbox": null,
+            "notes": null
+          }
+        ],
+        "sourceKind": "native"
+      }
+    ],
+    "fullText": "Cell biology introduction",
+    "languageHints": [
+      "en"
+    ],
+    "notes": [],
+    "warnings": [],
+    "extractorChain": [
+      "python:text:native"
+    ],
+    "fallbackChain": [],
+    "pageCount": 1,
+    "textLength": 25,
+    "tablesDetected": 0,
+    "listsDetected": 0,
+    "metadata": {
+      "unitKind": "section"
+    }
+  },
+  "ocr": null,
+  "docling": null,
+  "notes": [
+    "Attempted layers: native:text, ocr:skipped"
+  ],
+  "warnings": [],
+  "errors": [],
+  "capabilities": {
+    "available": true,
+    "nativeReady": true,
+    "ocrReady": true,
+    "modules": {
+      "pypdf": true,
+      "docx": true,
+      "openpyxl": true,
+      "paddleocr": true,
+      "docling": true
+    },
+    "versions": {
+      "pypdf": "6.9.2",
+      "python-docx": "1.2.0",
+      "openpyxl": "3.1.5",
+      "paddleocr": "3.4.0",
+      "docling": "2.82.0"
+    },
+    "reasons": []
+  },
+  "attemptedLayers": [
+    "native:text",
+    "ocr:skipped"
+  ],
+  "fileType": "txt",
+  "mode": "native"
+}

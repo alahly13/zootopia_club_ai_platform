@@ -94,6 +94,8 @@ interface DocumentContextType {
     runtimeOperationId?: string | null;
     documentId?: string | null;
     documentRevision?: number;
+    uploadedAt?: string | null;
+    documentStatus?: DocumentLifecycleStatus;
     extractedText?: string;
     context?: string;
   }) => void;
@@ -120,11 +122,14 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   // Keep readiness calculation centralized so all tools observe the same state.
   const resolveDocumentPreparationStatus = useCallback((payload: {
     file: File | null;
+    fileName?: string;
+    documentId?: string | null;
     extractedText: string;
     context: string;
     previousStatus: DocumentLifecycleStatus;
   }): DocumentLifecycleStatus => {
-    if (!payload.file) {
+    const hasDocumentIdentity = Boolean(payload.file || payload.documentId || payload.fileName?.trim());
+    if (!hasDocumentIdentity) {
       return 'empty';
     }
 
@@ -218,6 +223,8 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         context: nextContext,
         documentStatus: resolveDocumentPreparationStatus({
           file: prev.file,
+          fileName: prev.fileName,
+          documentId: prev.documentId,
           extractedText: text,
           context: nextContext,
           previousStatus: prev.documentStatus,
@@ -236,6 +243,8 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       context,
       documentStatus: resolveDocumentPreparationStatus({
         file: prev.file,
+        fileName: prev.fileName,
+        documentId: prev.documentId,
         extractedText: prev.extractedText,
         context,
         previousStatus: prev.documentStatus,
@@ -271,6 +280,8 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     runtimeOperationId?: string | null;
     documentId?: string | null;
     documentRevision?: number;
+    uploadedAt?: string | null;
+    documentStatus?: DocumentLifecycleStatus;
     extractedText?: string;
     context?: string;
   }) => {
@@ -297,10 +308,13 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         runtimeOperationId: payload.runtimeOperationId ?? null,
         documentId: payload.documentId ?? null,
         documentRevision: payload.documentRevision,
+        uploadedAt: payload.uploadedAt ?? null,
         extractedText: payload.extractedText ?? '',
         context: payload.context ?? payload.extractedText ?? '',
-        documentStatus: resolveDocumentPreparationStatus({
+        documentStatus: payload.documentStatus ?? resolveDocumentPreparationStatus({
           file: payload.file,
+          fileName: payload.fileName ?? payload.file?.name ?? '',
+          documentId: payload.documentId ?? null,
           extractedText: payload.extractedText ?? '',
           context: payload.context ?? payload.extractedText ?? '',
           previousStatus: prev.documentStatus,

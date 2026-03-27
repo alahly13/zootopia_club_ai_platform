@@ -175,6 +175,7 @@ export interface AIAdditionalContext {
   structuredDocument?: string;
   pageMap?: string;
   headingTree?: string;
+  warnings?: string;
 }
 
 export interface DocumentRuntimeContextRef {

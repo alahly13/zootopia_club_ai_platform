@@ -94,6 +94,12 @@ function pagesFromPython(rawPages: unknown): DocumentPageSegment[] {
       return {
         segmentId: createSegmentId(pageNumber, text, 'ocr'),
         pageNumber,
+        label:
+          typeof record.label === 'string' && record.label.trim()
+            ? record.label.trim()
+            : typeof record.unitLabel === 'string' && record.unitLabel.trim()
+              ? record.unitLabel.trim()
+              : `Page ${pageNumber}`,
         text,
         kind: 'ocr' as const,
         headingCandidates,
@@ -113,7 +119,8 @@ function fromPages(
   engine: string,
   pageSegments: DocumentPageSegment[],
   ocrBlocks: DocumentStructuredBlock[],
-  notes: string[] = []
+  notes: string[] = [],
+  raw: Record<string, unknown> | null = null
 ): OcrExtractionResult {
   const fullText = normalizeWhitespace(pageSegments.map((segment) => segment.text).join('\n\n'));
 
@@ -125,6 +132,7 @@ function fromPages(
     pageCount: pageSegments.length,
     fullText,
     notes,
+    raw,
   };
 }
 
@@ -150,6 +158,7 @@ function createImageMarker(fileName: string, mimeType: string, buffer: Buffer): 
     [{
       segmentId: createSegmentId(1, marker, 'image_payload'),
       pageNumber: 1,
+      label: 'Image 1',
       text: marker,
       kind: 'image_payload',
       headingCandidates: [],
@@ -158,7 +167,8 @@ function createImageMarker(fileName: string, mimeType: string, buffer: Buffer): 
       listCount: 0,
     }],
     blocks,
-    ['OCR engine unavailable, preserved multimodal image marker.']
+    ['OCR engine unavailable, preserved multimodal image marker.'],
+    null
   );
 }
 
@@ -187,6 +197,7 @@ function createUnavailableOcrNote(fileName: string, fileType: DocumentFileType):
     [{
       segmentId: createSegmentId(1, noteText, 'ocr'),
       pageNumber: 1,
+      label: fileType === 'pdf' ? 'Page 1' : 'Section 1',
       text: noteText,
       kind: 'ocr',
       headingCandidates: [],
@@ -195,7 +206,8 @@ function createUnavailableOcrNote(fileName: string, fileType: DocumentFileType):
       listCount: 0,
     }],
     blocks,
-    ['OCR runtime unavailable.']
+    ['OCR runtime unavailable.'],
+    null
   );
 }
 
@@ -206,9 +218,14 @@ export class OcrExtractionService {
   ): Promise<OcrExtractionResult | null> {
     const pythonPages = pagesFromPython(pythonResponse?.ocr?.pages);
     if (pythonPages.length > 0) {
-      const notes = Array.isArray(pythonResponse?.ocr?.notes)
-        ? pythonResponse?.ocr?.notes.filter((item): item is string => typeof item === 'string')
-        : [];
+      const notes = [
+        ...(Array.isArray(pythonResponse?.ocr?.notes)
+          ? pythonResponse?.ocr?.notes.filter((item): item is string => typeof item === 'string')
+          : []),
+        ...(Array.isArray(pythonResponse?.ocr?.warnings)
+          ? pythonResponse?.ocr?.warnings.filter((item): item is string => typeof item === 'string')
+          : []),
+      ];
       const ocrBlocks = normalizeBlocks(
         pythonResponse?.ocr?.ocrBlocks || pythonPages.flatMap((page) => page.blocks),
         1
@@ -218,37 +235,54 @@ export class OcrExtractionService {
         String(pythonResponse?.ocr?.engine || 'python:ocr'),
         pythonPages,
         ocrBlocks.length > 0 ? ocrBlocks : pythonPages.flatMap((page) => page.blocks),
-        notes
+        notes,
+        (pythonResponse?.ocr as Record<string, unknown>) || null
       );
     }
 
-    const doclingText = normalizeWhitespace(String(pythonResponse?.docling?.text || pythonResponse?.docling?.markdown || ''));
-    if (doclingText) {
-      const pageSegments: DocumentPageSegment[] = [{
-        segmentId: createSegmentId(1, doclingText, 'ocr'),
-        pageNumber: 1,
-        text: doclingText,
-        kind: 'ocr',
-        headingCandidates: [],
-        blocks: linesToBlocks({
-          pageNumber: 1,
-          text: doclingText,
-          source: 'ocr',
-        }),
-        tableCount: 0,
-        listCount: 0,
-      }];
+    const doclingPages = pagesFromPython(pythonResponse?.docling?.pages);
+    const doclingText = normalizeWhitespace(
+      String(pythonResponse?.docling?.text || pythonResponse?.docling?.markdown || '')
+    );
+    if (doclingPages.length > 0 || doclingText) {
+      const pageSegments: DocumentPageSegment[] = doclingPages.length > 0
+        ? doclingPages
+        : [{
+            segmentId: createSegmentId(1, doclingText, 'ocr'),
+            pageNumber: 1,
+            label: 'Section 1',
+            text: doclingText,
+            kind: 'ocr',
+            headingCandidates: [],
+            blocks: linesToBlocks({
+              pageNumber: 1,
+              text: doclingText,
+              source: 'ocr',
+            }),
+            tableCount: 0,
+            listCount: 0,
+          }];
 
       return fromPages(
         'python:docling-ocr-fallback',
         pageSegments,
         pageSegments.flatMap((page) => page.blocks),
-        ['Docling payload supplied OCR/hybrid fallback text.']
+        [
+          'Docling payload supplied OCR/hybrid fallback text.',
+          ...(Array.isArray(pythonResponse?.docling?.warnings)
+            ? pythonResponse?.docling?.warnings.filter((item): item is string => typeof item === 'string')
+            : []),
+        ],
+        (pythonResponse?.docling as Record<string, unknown>) || null
       );
     }
 
     if (input.fileType === 'image') {
       return createImageMarker(input.fileName, input.mimeType, input.buffer);
+    }
+
+    if (input.fileType === 'pdf') {
+      return null;
     }
 
     if (DOCUMENT_RUNTIME_REQUIRE_PYTHON_OCR) {

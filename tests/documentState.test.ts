@@ -57,3 +57,25 @@ test('uploaded document snapshots preserve the canonical lifecycle fields', () =
   assert.equal(ready.documentRevision, 2);
   assert.equal(ready.extractedText, 'Extracted content');
 });
+
+test('rehydrated prepared documents stay ready without a browser File object', () => {
+  const empty = createEmptyDocument();
+
+  const restored = buildUploadedDocument({
+    previous: empty,
+    file: null,
+    fileName: 'chapter-3.pdf',
+    mimeType: 'application/pdf',
+    artifactId: 'artifact-3',
+    sourceFileId: 'source-3',
+    documentId: 'doc-3',
+    extractedText: 'Recovered extracted content from runtime',
+    context: 'Recovered extracted content from runtime',
+    uploadedAt: '2026-03-27T10:00:00.000Z',
+  });
+
+  assert.equal(restored.documentStatus, 'ready');
+  assert.equal(restored.file, null);
+  assert.equal(restored.documentId, 'doc-3');
+  assert.equal(restored.fileName, 'chapter-3.pdf');
+});

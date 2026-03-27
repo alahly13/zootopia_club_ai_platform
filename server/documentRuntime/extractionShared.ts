@@ -436,7 +436,7 @@ export function buildNormalizedMarkdown(input: {
   lines.push('');
 
   for (const segment of input.pageSegments) {
-    lines.push(`### Page ${segment.pageNumber}`);
+    lines.push(`### ${segment.label || `Page ${segment.pageNumber}`}`);
     lines.push('');
 
     const orderedBlocks = [...segment.blocks].sort((left, right) => left.order - right.order);

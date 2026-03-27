@@ -81,13 +81,28 @@ export function createEmptyDocument(): UploadedDocument {
 export function resolveDocumentStatus(
   file: File | null,
   extractedText: string,
-  fallback: DocumentLifecycleStatus = 'empty'
+  fallback: DocumentLifecycleStatus = 'empty',
+  options: {
+    context?: string;
+    documentId?: string | null;
+    fileName?: string;
+  } = {}
 ): DocumentLifecycleStatus {
-  if (!file) {
+  const hasDocumentIdentity = Boolean(
+    file ||
+    options.documentId ||
+    options.fileName?.trim()
+  );
+
+  if (!hasDocumentIdentity) {
     return 'empty';
   }
 
-  return extractedText.trim().length > 0 ? 'ready' : fallback === 'empty' ? 'preparing' : fallback;
+  if (extractedText.trim().length > 0 || (options.context || '').trim().length > 0) {
+    return 'ready';
+  }
+
+  return fallback === 'empty' ? 'preparing' : fallback;
 }
 
 export function buildUploadedDocument(input: BuildUploadedDocumentInput): UploadedDocument {
@@ -99,8 +114,13 @@ export function buildUploadedDocument(input: BuildUploadedDocumentInput): Upload
   const fileName = input.fileName ?? file?.name ?? '';
   const fileSizeBytes = input.fileSizeBytes ?? file?.size ?? null;
   const mimeType = input.mimeType ?? file?.type ?? '';
+  const documentId = input.documentId ?? createDocumentIdentity(file, uploadedAt);
   const documentRevision = input.documentRevision ?? previous.documentRevision + 1;
-  const documentStatus = input.documentStatus ?? resolveDocumentStatus(file, extractedText, previous.documentStatus);
+  const documentStatus = input.documentStatus ?? resolveDocumentStatus(file, extractedText, previous.documentStatus, {
+    context,
+    documentId,
+    fileName,
+  });
 
   return {
     file,
@@ -116,7 +136,7 @@ export function buildUploadedDocument(input: BuildUploadedDocumentInput): Upload
     extractedText,
     context,
     uploadedAt,
-    documentId: input.documentId ?? createDocumentIdentity(file, uploadedAt),
+    documentId,
     documentRevision,
     documentStatus,
   };

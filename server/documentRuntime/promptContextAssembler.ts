@@ -6,16 +6,16 @@ import {
 } from './types.js';
 
 const DEFAULT_TOOL_CHAR_LIMITS: Record<string, number> = {
-  analyze: 100000,
-  quiz: 80000,
-  infographic: 60000,
-  chat: 120000,
-  summary: 20000,
-  flashcards: 20000,
-  mindmap: 20000,
-  concepts: 20000,
-  notes: 20000,
-  diagrams: 20000,
+  analyze: 140000,
+  quiz: 120000,
+  infographic: 90000,
+  chat: 140000,
+  summary: 90000,
+  flashcards: 90000,
+  mindmap: 90000,
+  concepts: 90000,
+  notes: 90000,
+  diagrams: 90000,
 };
 
 function clipContext(text: string, limit: number): string {
@@ -27,12 +27,16 @@ function buildSummary(input: {
   artifact: StoredArtifactRecord;
   payload: DocumentArtifactPayload;
 }): string {
+  const extractionChain = Array.isArray(input.payload.extractionMeta?.extractorChain)
+    ? input.payload.extractionMeta.extractorChain.filter((item): item is string => typeof item === 'string')
+    : [];
   return [
     `Document: ${input.document.fileName}`,
     `File type: ${input.payload.fileType}`,
     `Strategy: ${input.artifact.extractionStrategy}`,
     `Pages: ${input.payload.pageSegments.length}`,
     `Languages: ${input.payload.languageHints.join(', ') || 'unknown'}`,
+    `Extractors: ${extractionChain.join(' -> ') || 'unknown'}`,
     `Workflow: ${input.document.workflowId}`,
   ].join(' | ');
 }
@@ -42,22 +46,31 @@ function buildInsights(input: {
   artifact: StoredArtifactRecord;
   payload: DocumentArtifactPayload;
 }): string {
+  const fallbackChain = Array.isArray(input.payload.extractionMeta?.fallbackChain)
+    ? input.payload.extractionMeta.fallbackChain.filter((item): item is string => typeof item === 'string')
+    : [];
   return [
     `Sections: ${input.payload.structuredDocumentJson.sections.length}`,
     `Tables: ${input.payload.structuredDocumentJson.tables.length}`,
     `Lists: ${input.payload.structuredDocumentJson.lists.length}`,
     `OCR blocks: ${input.payload.ocrBlocks.length}`,
+    `Fallback chain: ${fallbackChain.join(' -> ') || 'none'}`,
     `Actor scope: ${input.document.workspaceScope}/${input.document.ownerActorId}`,
     `Workspace: ${input.artifact.workspaceRootRelativePath}`,
   ].join(' | ');
 }
 
 function buildPageMapSummary(payload: DocumentArtifactPayload): string {
+  const segmentLabels = new Map(
+    payload.pageSegments.map((segment) => [segment.pageNumber, segment.label || `Page ${segment.pageNumber}`])
+  );
+
   return payload.pageMap
     .map((page) => {
       const headings = page.sectionTitles.join(', ') || 'none';
       const sources = page.sourceKinds.join(', ');
-      return `Page ${page.pageNumber} | headings: ${headings} | chars: ${page.charCount} | sources: ${sources}`;
+      const label = segmentLabels.get(page.pageNumber) || `Page ${page.pageNumber}`;
+      return `${label} | headings: ${headings} | chars: ${page.charCount} | sources: ${sources}`;
     })
     .join('\n');
 }
@@ -83,6 +96,18 @@ function buildOcrSummary(payload: DocumentArtifactPayload): string | undefined {
       return `Page ${block.pageNumber} | ${block.text}${confidence}`;
     })
     .join('\n');
+}
+
+function buildWarningSummary(payload: DocumentArtifactPayload): string | undefined {
+  const warnings = Array.isArray(payload.extractionMeta?.warnings)
+    ? payload.extractionMeta.warnings.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : [];
+
+  if (warnings.length === 0) {
+    return undefined;
+  }
+
+  return warnings.slice(0, 20).join('\n');
 }
 
 function buildCondensedStructuredDocument(payload: DocumentArtifactPayload): string {
@@ -132,6 +157,7 @@ export class PromptContextAssembler {
         pageMap: clipContext(buildPageMapSummary(input.payload), 12000),
         headingTree: clipContext(buildHeadingTreeSummary(input.payload), 12000),
         ocr: buildOcrSummary(input.payload),
+        warnings: buildWarningSummary(input.payload),
         metadata: {
           documentId: input.document.documentId,
           workflowId: input.document.workflowId,
@@ -143,6 +169,15 @@ export class PromptContextAssembler {
           processingPathway: input.document.processingPathway,
           extractionStrategy: input.artifact.extractionStrategy,
           extractionVersion: input.artifact.extractionVersion,
+          extractorChain: Array.isArray(input.payload.extractionMeta?.extractorChain)
+            ? input.payload.extractionMeta.extractorChain
+            : [],
+          fallbackChain: Array.isArray(input.payload.extractionMeta?.fallbackChain)
+            ? input.payload.extractionMeta.fallbackChain
+            : [],
+          extractionWarnings: Array.isArray(input.payload.extractionMeta?.warnings)
+            ? input.payload.extractionMeta.warnings
+            : [],
           languageHints: input.payload.languageHints,
           pageCount: input.payload.pageSegments.length,
           sectionCount: input.payload.structuredDocumentJson.sections.length,

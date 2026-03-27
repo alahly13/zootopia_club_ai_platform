@@ -15,6 +15,7 @@ type FileDetectionInput = {
 type PdfTextDensityReport = {
   totalPages: number;
   pagesWithText: number;
+  sparseTextPages: number;
   totalCharacters: number;
   averageCharactersPerPage: number;
 };
@@ -135,6 +136,7 @@ async function inspectPdfTextDensity(buffer: Buffer): Promise<PdfTextDensityRepo
   try {
     const pdf = await loadingTask.promise;
     let pagesWithText = 0;
+    let sparseTextPages = 0;
     let totalCharacters = 0;
 
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
@@ -147,12 +149,19 @@ async function inspectPdfTextDensity(buffer: Buffer): Promise<PdfTextDensityRepo
       if (pageText.length > 20) {
         pagesWithText += 1;
       }
+      if (pageText.length > 0 && pageText.length < 80) {
+        sparseTextPages += 1;
+      }
+      if (pageText.length === 0) {
+        sparseTextPages += 1;
+      }
       totalCharacters += pageText.length;
     }
 
     return {
       totalPages: pdf.numPages,
       pagesWithText,
+      sparseTextPages,
       totalCharacters,
       averageCharactersPerPage: pdf.numPages > 0 ? Math.round(totalCharacters / pdf.numPages) : 0,
     };
@@ -200,6 +209,8 @@ export class FileTypeDetectionService {
       const density = await inspectPdfTextDensity(input.buffer);
       const textCoverageRatio =
         density.totalPages > 0 ? density.pagesWithText / density.totalPages : 0;
+      const sparsePageRatio =
+        density.totalPages > 0 ? density.sparseTextPages / density.totalPages : 0;
 
       if (density.totalCharacters === 0 || textCoverageRatio < 0.35) {
         return {
@@ -212,6 +223,7 @@ export class FileTypeDetectionService {
               ...detection.hints,
               `pdf-pages:${density.totalPages}`,
               `pdf-pages-with-text:${density.pagesWithText}`,
+              `pdf-sparse-pages:${density.sparseTextPages}`,
             ],
           },
           nativePreferred: false,
@@ -221,17 +233,18 @@ export class FileTypeDetectionService {
         };
       }
 
-      if (textCoverageRatio < 0.85 || density.averageCharactersPerPage < 180) {
+      if (textCoverageRatio < 0.85 || density.averageCharactersPerPage < 180 || sparsePageRatio > 0) {
         return {
           strategyId: 'pdf_hybrid_merge',
           executionMode: 'hybrid',
-          reason: 'PDF has partial native text, so native extraction with OCR fallback is safer.',
+          reason: 'PDF has partial or sparse native text coverage, so native extraction with OCR fallback is safer.',
           detection: {
             ...detection,
             hints: [
               ...detection.hints,
               `pdf-pages:${density.totalPages}`,
               `pdf-pages-with-text:${density.pagesWithText}`,
+              `pdf-sparse-pages:${density.sparseTextPages}`,
             ],
           },
           nativePreferred: true,
@@ -251,6 +264,7 @@ export class FileTypeDetectionService {
             ...detection.hints,
             `pdf-pages:${density.totalPages}`,
             `pdf-pages-with-text:${density.pagesWithText}`,
+            `pdf-sparse-pages:${density.sparseTextPages}`,
           ],
         },
         nativePreferred: true,
