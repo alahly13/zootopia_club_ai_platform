@@ -15,6 +15,8 @@ interface ModalProps {
   flowId?: string;
   flowPriority?: PopupFlowPriority;
   canPreempt?: boolean;
+  hideCloseButton?: boolean;
+  closeOnBackdropClick?: boolean;
 }
 
 export const Modal: React.FC<ModalProps> = ({
@@ -26,6 +28,8 @@ export const Modal: React.FC<ModalProps> = ({
   flowId,
   flowPriority = POPUP_FLOW_PRIORITY.criticalBlocking,
   canPreempt = false,
+  hideCloseButton = false,
+  closeOnBackdropClick = true,
 }) => {
   const generatedFlowId = React.useId();
   const resolvedFlowId = flowId || `shared-modal-${generatedFlowId}`;
@@ -46,7 +50,7 @@ export const Modal: React.FC<ModalProps> = ({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className={cn("fixed inset-0 bg-black/50 backdrop-blur-sm z-[100]", isSidebarCollapsed ? "md:ps-20" : "md:ps-64")}
-            onClick={onClose}
+            onClick={closeOnBackdropClick ? onClose : undefined}
           />
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
@@ -58,9 +62,13 @@ export const Modal: React.FC<ModalProps> = ({
               {title && (
                 <div className="flex items-center justify-between p-4 border-b border-zinc-200 dark:border-zinc-800">
                   <h3 className="font-bold text-zinc-900 dark:text-white">{title}</h3>
-                  <button onClick={onClose} className="p-1 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors">
-                    <X size={20} className="text-zinc-500" />
-                  </button>
+                  {!hideCloseButton ? (
+                    <button onClick={onClose} className="p-1 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors">
+                      <X size={20} className="text-zinc-500" />
+                    </button>
+                  ) : (
+                    <div className="h-7 w-7" aria-hidden="true" />
+                  )}
                 </div>
               )}
               <div className="p-4">

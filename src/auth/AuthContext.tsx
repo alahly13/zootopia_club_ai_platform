@@ -41,7 +41,33 @@ import { useActivityManagement } from './hooks/useActivityManagement';
 import { useAuthListeners } from './hooks/useAuthListeners';
 import { isUserAdmin } from './accessControl';
 import { clearWelcomeSessionFlags } from '../constants/welcomeFlow';
+import { aiCache } from '../ai/services/cacheService';
 import { safeLocalStorageRemoveItem } from '../utils/browserStorage';
+import {
+  AuthSessionState,
+  AuthSessionType,
+  createUnauthenticatedAuthSessionState,
+} from './session/types';
+import {
+  buildAuthSessionScopeKey,
+  resolveAuthSessionTypeFromUser,
+} from './session/authMode';
+import {
+  bootstrapPlatformAuthSession,
+  logoutPlatformAuthSession,
+  refreshPlatformAuthSession,
+} from './session/sessionApi';
+import {
+  clearAllStoredAuthSessions,
+  clearLegacyAuthSessionKeys,
+  clearSiblingAuthSessionManagers,
+  getAuthSessionManager,
+} from './session';
+import {
+  clearStoredAuthSessionMode,
+  readStoredAuthSessionMode,
+  writeStoredAuthSessionMode,
+} from './session/storage';
 
 /**
  * IMPORTANT ARCHITECTURE RULES
@@ -55,6 +81,9 @@ import { safeLocalStorageRemoveItem } from '../utils/browserStorage';
 
 interface AuthContextType {
   user: User | null;
+  authMode: AuthSessionType | null;
+  authSession: AuthSessionState;
+  sessionScopeKey: string | null;
   activities: Activity[];
   allUsers: User[];
   userRequests: UserRequest[];
@@ -74,7 +103,7 @@ interface AuthContextType {
   register: (email: string, password: string, userData: Partial<User>) => Promise<void>;
   adminLogin: (username: string, password: string) => Promise<boolean>;
   checkUsernameAvailability: (username: string) => Promise<boolean>;
-  logout: () => void;
+  logout: () => Promise<void>;
 
   logActivity: (type: Activity['type'], description: string) => void;
 
@@ -177,6 +206,7 @@ interface AuthContextType {
 
 const INITIAL_AUTH_RESOLUTION_TIMEOUT_MS = 8_000;
 const AUTH_PROFILE_SYNC_TIMEOUT_MS = 10_000;
+const AUTH_SESSION_REENTRY_REFRESH_INTERVAL_MS = 5 * 60_000;
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 AuthContext.displayName = 'AuthContext';
@@ -193,6 +223,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     uid: string;
     email: string | null;
   } | null>(null);
+  const [authSession, setAuthSession] = useState<AuthSessionState>(() => {
+    const storedAuthMode = readStoredAuthSessionMode();
+    const storedSession = storedAuthMode ? getAuthSessionManager(storedAuthMode).load() : null;
+
+    if (!storedSession) {
+      return createUnauthenticatedAuthSessionState({
+        sessionState: 'restoring',
+        restoreFailureReason: null,
+      });
+    }
+
+    return {
+      ...createUnauthenticatedAuthSessionState({
+        sessionState: 'restoring',
+        restoreFailureReason: null,
+      }),
+      ...storedSession,
+      sessionState: 'restoring',
+      restoreFailureReason: null,
+      logoutReason: null,
+      sessionScopeKey:
+        storedSession.sessionScopeKey ||
+        buildAuthSessionScopeKey({
+          authType: storedSession.authType,
+          uid: storedSession.uid,
+          email: storedSession.email,
+        }),
+    };
+  });
 
   /**
    * Shared admin/user data feeds
@@ -214,6 +273,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const isAdmin = isUserAdmin(user);
   const isAuthenticated = !!user || !!pendingFirebaseSession;
   const isProfileHydrating = !!pendingFirebaseSession && !user;
+  const authMode = authSession.authType;
+  const sessionScopeKey =
+    authSession.sessionScopeKey ||
+    buildAuthSessionScopeKey({
+      authType: resolveAuthSessionTypeFromUser(user),
+      uid: user?.id || pendingFirebaseSession?.uid || null,
+      email: user?.email || pendingFirebaseSession?.email || null,
+    });
 
   /**
    * Unified notification surface for hooks and consumers.
@@ -355,6 +422,104 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
+  useEffect(() => {
+    clearLegacyAuthSessionKeys();
+  }, []);
+
+  const resolveAuthModeMismatchMessage = useCallback(
+    (expectedAuthType: AuthSessionType, actualAuthType: AuthSessionType | null) => {
+      if (expectedAuthType === 'admin') {
+        return 'This account is not authorized for the admin control center.';
+      }
+
+      if (expectedAuthType === 'normal' && actualAuthType === 'admin') {
+        return 'Admin accounts must sign in through the dedicated admin login page.';
+      }
+
+      if (expectedAuthType === 'normal' && actualAuthType === 'fast_access') {
+        return 'Temporary Faculty accounts must use the dedicated Fast Access login flow.';
+      }
+
+      if (expectedAuthType === 'fast_access') {
+        return 'This session must stay on the Faculty Fast Access lane.';
+      }
+
+      return 'Authentication mode mismatch detected. Please sign in again.';
+    },
+    []
+  );
+
+  const applyServerAuthSession = useCallback(
+    (
+      serverSession: AuthSessionState | {
+        authType: AuthSessionType;
+        uid: string;
+        email: string | null;
+        sessionState: AuthSessionState['sessionState'];
+        sessionSource: AuthSessionState['sessionSource'];
+        sessionId: string | null;
+        traceId: string | null;
+        role: AuthSessionState['role'];
+        adminLevel: string | null;
+        modeMismatch: boolean;
+        sessionFingerprint: string | null;
+        loginMethod: string | null;
+        issuedAt: string | null;
+        refreshedAt: string | null;
+        expiresAt: string | null;
+        lastActivityAt: string | null;
+        authProviders: string[];
+        accountScope: string | null;
+        isTemporaryAccess: boolean;
+        cacheNamespace: string | null;
+        sessionNamespace: string | null;
+        documentRuntimeNamespace: string | null;
+        rehydrationStatus: AuthSessionState['rehydrationStatus'];
+        cacheHydrationStatus: AuthSessionState['cacheHydrationStatus'];
+        restoreFailureReason: string | null;
+        logoutReason: string | null;
+        reEntryStatus: AuthSessionState['reEntryStatus'];
+        adminVerificationStatus: AuthSessionState['adminVerificationStatus'];
+        fastAccessVerificationStatus: AuthSessionState['fastAccessVerificationStatus'];
+        accountCompletenessStatus: AuthSessionState['accountCompletenessStatus'];
+        lastValidatedAt: string | null;
+        tokenIssuedAtSec: number | null;
+        tokenAuthTimeSec: number | null;
+      }
+    ) => {
+      const sessionScopeKey = buildAuthSessionScopeKey({
+        authType: serverSession.authType,
+        uid: serverSession.uid,
+        email: serverSession.email,
+      });
+
+      const nextSession: AuthSessionState = {
+        ...createUnauthenticatedAuthSessionState(),
+        ...serverSession,
+        authType: serverSession.authType,
+        sessionState: serverSession.sessionState,
+        sessionScopeKey,
+      };
+
+      getAuthSessionManager(serverSession.authType).persist(nextSession);
+      writeStoredAuthSessionMode(serverSession.authType);
+      clearSiblingAuthSessionManagers(serverSession.authType);
+      setAuthSession(nextSession);
+
+      logger.info('Auth session established', {
+        area: 'auth',
+        event: 'auth-session-established',
+        authType: nextSession.authType,
+        sessionState: nextSession.sessionState,
+        sessionScopeKey,
+        rehydrationStatus: nextSession.rehydrationStatus,
+      });
+
+      return nextSession;
+    },
+    []
+  );
+
   const markAuthBootstrapIssue = useCallback(
     (title: string, message: string, detail?: string) => {
       logger.error('Auth bootstrap entered recovery mode', {
@@ -384,25 +549,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
    * - Clears local persisted session data
    * - Does NOT touch unrelated global app state
    */
-  const clearSessionState = useCallback(() => {
+  const clearSessionState = useCallback((options: {
+    sessionState?: AuthSessionState['sessionState'];
+    logoutReason?: string | null;
+    restoreFailureReason?: string | null;
+  } = {}) => {
     setUser(null);
     setActivities([]);
     setUserRequests([]);
     setAllUsers([]);
     setPendingFirebaseSession(null);
+    setAuthSession(
+      createUnauthenticatedAuthSessionState({
+        sessionState: options.sessionState || 'unauthenticated',
+        logoutReason: options.logoutReason || null,
+        restoreFailureReason: options.restoreFailureReason || null,
+      })
+    );
 
     const keysToClear = [
-      'zootopia_admin_session',
       'zootopia_models',
       'zootopia_selected_model',
       'zootopia_qwen_api_key',
       'zootopia_qwen_region',
       'zootopia_qwen_base_url',
       'zootopia_platform_api_key',
-      'zootopia_session_expiry',
     ];
 
     keysToClear.forEach((key) => safeLocalStorageRemoveItem(key));
+    clearAllStoredAuthSessions();
+    aiCache.clear();
     // Welcome popup/audio are auth-entry UX, so they should reset when the
     // authenticated session ends and a later secure login starts fresh.
     clearWelcomeSessionFlags();
@@ -414,18 +590,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
    * This hook owns login/register/logout/sync primitives.
    */
   const {
-    login,
-    loginWithIdentifier,
-    register,
-    adminLogin,
-    logout,
-    forgotPassword,
-    updatePassword,
-    linkAccount,
-    sendVerificationEmail,
-    resendVerificationEmail,
-    checkEmailVerificationStatus,
-    syncUserWithFirestore,
+    login: rawLogin,
+    loginWithIdentifier: rawLoginWithIdentifier,
+    register: rawRegister,
+    adminLogin: rawAdminLogin,
+    forgotPassword: rawForgotPassword,
+    updatePassword: rawUpdatePassword,
+    linkAccount: rawLinkAccount,
+    sendVerificationEmail: rawSendVerificationEmail,
+    resendVerificationEmail: rawResendVerificationEmail,
+    checkEmailVerificationStatus: rawCheckEmailVerificationStatus,
+    syncUserWithFirestore: rawSyncUserWithFirestore,
   } = useAuthActions(
     setUser,
     logActivity,
@@ -435,11 +610,242 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     notify
   );
 
-  const syncUserWithFirestoreRef = React.useRef(syncUserWithFirestore);
+  const establishAuthSession = useCallback(
+    async (
+      expectedAuthType: AuthSessionType | null | undefined,
+      source: 'login' | 'restore' | 'refresh'
+    ) => {
+      const response =
+        source === 'refresh'
+          ? await refreshPlatformAuthSession(expectedAuthType, 'refresh')
+          : await bootstrapPlatformAuthSession(
+              expectedAuthType,
+              source === 'login' ? 'login' : 'restore'
+            );
+
+      const nextSession = applyServerAuthSession({
+        ...response.session,
+        sessionSource: source === 'login' ? 'login' : response.session.sessionSource,
+      });
+
+      if (source === 'login' && expectedAuthType && nextSession.authType !== expectedAuthType) {
+        const mismatchMessage = resolveAuthModeMismatchMessage(expectedAuthType, nextSession.authType);
+        try {
+          await signOut(auth);
+        } catch (error) {
+          logger.warn('Failed to sign out after auth-mode mismatch', {
+            area: 'auth',
+            event: 'auth-session-mode-mismatch-signout-failed',
+            expectedAuthType,
+            actualAuthType: nextSession.authType,
+            error,
+          });
+        }
+
+        clearSessionState({
+          sessionState: 'invalid',
+          restoreFailureReason: mismatchMessage,
+        });
+        throw new Error(mismatchMessage);
+      }
+
+      if (source !== 'login' && expectedAuthType && nextSession.authType !== expectedAuthType) {
+        logger.warn('Stored auth mode hint differed from restored session', {
+          area: 'auth',
+          event: 'auth-session-mode-restored-different',
+          expectedAuthType,
+          actualAuthType: nextSession.authType,
+        });
+      }
+
+      return nextSession;
+    },
+    [applyServerAuthSession, clearSessionState, resolveAuthModeMismatchMessage]
+  );
+
+  const syncUserAndSession = useCallback(
+    async (
+      firebaseUser: FirebaseUser,
+      expectedAuthType: AuthSessionType | null | undefined,
+      source: 'login' | 'restore'
+    ) => {
+      await rawSyncUserWithFirestore(firebaseUser);
+      await establishAuthSession(expectedAuthType, source);
+    },
+    [establishAuthSession, rawSyncUserWithFirestore]
+  );
+
+  const syncUserAndSessionRef = React.useRef(syncUserAndSession);
 
   useEffect(() => {
-    syncUserWithFirestoreRef.current = syncUserWithFirestore;
-  }, [syncUserWithFirestore]);
+    syncUserAndSessionRef.current = syncUserAndSession;
+  }, [syncUserAndSession]);
+
+  const login = useCallback(async (firebaseUser: FirebaseUser) => {
+    writeStoredAuthSessionMode('normal');
+
+    try {
+      await rawLogin(firebaseUser);
+      await establishAuthSession('normal', 'login');
+    } catch (error) {
+      clearStoredAuthSessionMode();
+      throw error;
+    }
+  }, [establishAuthSession, rawLogin]);
+
+  const loginWithIdentifier = useCallback(async (identifier: string, password: string) => {
+    writeStoredAuthSessionMode('normal');
+
+    try {
+      await rawLoginWithIdentifier(identifier, password);
+      await establishAuthSession('normal', 'login');
+    } catch (error) {
+      clearStoredAuthSessionMode();
+      throw error;
+    }
+  }, [establishAuthSession, rawLoginWithIdentifier]);
+
+  const register = useCallback(async (email: string, password: string, userData: Partial<User>) => {
+    await rawRegister(email, password, userData);
+  }, [rawRegister]);
+
+  const adminLogin = useCallback(async (identifier: string, password: string) => {
+    writeStoredAuthSessionMode('admin');
+
+    try {
+      const success = await rawAdminLogin(identifier, password);
+      if (!success) {
+        clearStoredAuthSessionMode();
+        return false;
+      }
+
+      await establishAuthSession('admin', 'login');
+      return true;
+    } catch (error) {
+      clearStoredAuthSessionMode();
+      throw error;
+    }
+  }, [establishAuthSession, rawAdminLogin]);
+
+  const forgotPassword = useCallback(async (email: string) => {
+    await rawForgotPassword(email);
+  }, [rawForgotPassword]);
+
+  const updatePassword = useCallback(async (password: string) => {
+    await rawUpdatePassword(password);
+  }, [rawUpdatePassword]);
+
+  const linkAccount = useCallback(async (email: string, password: string) => {
+    await rawLinkAccount(email, password);
+  }, [rawLinkAccount]);
+
+  const sendVerificationEmail = useCallback(async (firebaseUser: FirebaseUser) => {
+    await rawSendVerificationEmail(firebaseUser);
+  }, [rawSendVerificationEmail]);
+
+  const resendVerificationEmail = useCallback(async () => {
+    await rawResendVerificationEmail();
+  }, [rawResendVerificationEmail]);
+
+  const checkEmailVerificationStatus = useCallback(async () => {
+    await rawCheckEmailVerificationStatus();
+  }, [rawCheckEmailVerificationStatus]);
+
+  const logout = useCallback(
+    async () => {
+      const reason = 'logout';
+      const activeAuthType =
+        authSession.authType ||
+        resolveAuthSessionTypeFromUser(user) ||
+        readStoredAuthSessionMode();
+
+      setAuthSession((current) => ({
+        ...current,
+        sessionState: 'logging_out',
+        logoutReason: reason,
+      }));
+
+      try {
+        if (auth.currentUser) {
+          await logActivity('logout', 'User logged out', 'success', undefined, auth.currentUser.uid);
+        }
+
+        if (activeAuthType && auth.currentUser) {
+          try {
+            await logoutPlatformAuthSession(activeAuthType, reason);
+          } catch (error) {
+            logger.warn('Session invalidation request failed during logout', {
+              area: 'auth',
+              event: 'auth-session-logout-invalidation-failed',
+              authType: activeAuthType,
+              error,
+            });
+          }
+        }
+
+        await signOut(auth);
+        clearSessionState({
+          logoutReason: reason,
+        });
+        notify.success('Logged out successfully');
+      } catch (error) {
+        logger.error('Logout error', { error, reason });
+        clearSessionState({
+          sessionState: 'invalid',
+          logoutReason: reason,
+          restoreFailureReason: error instanceof Error ? error.message : String(error),
+        });
+        notify.error('Logout failed');
+      }
+    },
+    [authSession.authType, clearSessionState, logActivity, notify, user]
+  );
+
+  const refreshActiveAuthSession = useCallback(
+    async (source: 'refresh' | 'restore' = 'refresh') => {
+      const expectedAuthType =
+        authSession.authType ||
+        resolveAuthSessionTypeFromUser(user) ||
+        readStoredAuthSessionMode();
+
+      if (!auth.currentUser || !expectedAuthType) {
+        return null;
+      }
+
+      try {
+        return await establishAuthSession(expectedAuthType, source);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn('Session refresh failed', {
+          area: 'auth',
+          event: 'auth-session-refresh-failed',
+          expectedAuthType,
+          error,
+        });
+
+        if (/session|sign in|authentication/i.test(message)) {
+          try {
+            await signOut(auth);
+          } catch {
+            // Best-effort sign-out only.
+          }
+
+          clearSessionState({
+            sessionState: 'invalid',
+            restoreFailureReason: message,
+          });
+        } else {
+          setAuthSession((current) => ({
+            ...current,
+            restoreFailureReason: message,
+          }));
+        }
+
+        throw error;
+      }
+    },
+    [authSession.authType, clearSessionState, establishAuthSession, user]
+  );
 
   const retryAuthBootstrap = useCallback(async () => {
     logger.info('Retrying auth bootstrap', {
@@ -476,7 +882,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }, AUTH_PROFILE_SYNC_TIMEOUT_MS);
 
     try {
-      await syncUserWithFirestore(auth.currentUser);
+      await syncUserAndSession(auth.currentUser, readStoredAuthSessionMode(), 'restore');
     } catch (error) {
       markAuthBootstrapIssue(
         'Session restore failed',
@@ -489,7 +895,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     clearProfileSyncTimeout,
     clearSessionState,
     markAuthBootstrapIssue,
-    syncUserWithFirestore,
+    syncUserAndSession,
   ]);
 
   const clearStalledAuthSession = useCallback(async () => {
@@ -503,6 +909,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     clearProfileSyncTimeout();
 
     try {
+      if (auth.currentUser && authSession.authType) {
+        await logoutPlatformAuthSession(authSession.authType, 'stalled_session_reset').catch(() => undefined);
+      }
+
       if (auth.currentUser) {
         await signOut(auth);
       }
@@ -519,7 +929,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setAuthBootstrapState('ready');
       setIsAuthReady(true);
     }
-  }, [clearAuthResolutionTimeout, clearProfileSyncTimeout, clearSessionState]);
+  }, [authSession.authType, clearAuthResolutionTimeout, clearProfileSyncTimeout, clearSessionState]);
 
   /**
    * Auth bootstrap listener
@@ -591,7 +1001,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           );
         }, AUTH_PROFILE_SYNC_TIMEOUT_MS);
 
-        void syncUserWithFirestoreRef.current(firebaseUser).catch((error) => {
+        void syncUserAndSessionRef.current(firebaseUser, readStoredAuthSessionMode(), 'restore').catch((error) => {
           if (!isMounted) {
             return;
           }
@@ -634,6 +1044,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     clearProfileSyncTimeout,
     clearSessionState,
     markAuthBootstrapIssue,
+    syncUserAndSessionRef,
   ]);
 
   useEffect(() => {
@@ -654,6 +1065,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsAuthReady(true);
   }, [clearProfileSyncTimeout, user?.id]);
 
+  useEffect(() => {
+    if (!user?.id || !auth.currentUser || authSession.sessionState !== 'authenticated') {
+      return;
+    }
+
+    let lastRefreshAt = 0;
+
+    const maybeRefreshSession = () => {
+      if (document.visibilityState && document.visibilityState !== 'visible') {
+        return;
+      }
+
+      if (Date.now() - lastRefreshAt < AUTH_SESSION_REENTRY_REFRESH_INTERVAL_MS) {
+        return;
+      }
+
+      lastRefreshAt = Date.now();
+      void refreshActiveAuthSession('refresh').catch(() => undefined);
+    };
+
+    window.addEventListener('focus', maybeRefreshSession);
+    document.addEventListener('visibilitychange', maybeRefreshSession);
+
+    return () => {
+      window.removeEventListener('focus', maybeRefreshSession);
+      document.removeEventListener('visibilitychange', maybeRefreshSession);
+    };
+  }, [authSession.sessionState, refreshActiveAuthSession, user?.id]);
+
   /**
    * Context value is memoized to reduce downstream re-renders.
    * This is especially important because the provider sits high in the tree.
@@ -661,6 +1101,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const contextValue = useMemo<AuthContextType>(
     () => ({
       user,
+      authMode,
+      authSession,
+      sessionScopeKey,
       activities,
       allUsers,
       userRequests,
@@ -745,6 +1188,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }),
     [
       user,
+      authMode,
+      authSession,
+      sessionScopeKey,
       activities,
       allUsers,
       userRequests,

@@ -1,16 +1,16 @@
-# Render now rides the same Docker backend contract as Railway, Fly.io, and
-# Cloud Run so deployment does not depend on Render-specific Python behavior.
-# The container owns both the Node server and the nested Python extraction
-# worker installed from server/documentRuntime/python/requirements.txt.
+# Native Render contract for the current single-service Node + nested Python
+# worker architecture. Do not pin OS-specific binary packages directly in
+# package.json; Render must install the generic Vite/Tailwind toolchain and let
+# upstream packages resolve the correct Linux-native optional binaries.
 services:
   - type: web
     name: zootopia-club-ai
-    env: docker
-    dockerContext: .
-    dockerfilePath: ./Dockerfile
+    env: node
+    buildCommand: npm run deploy:render:build
+    startCommand: npm run start
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
       - key: DOCUMENT_RUNTIME_PYTHON_EXECUTABLE
-        value: /app/.venv/bin/python
+        value: .venv/bin/python

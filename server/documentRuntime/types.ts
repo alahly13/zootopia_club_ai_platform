@@ -43,6 +43,7 @@ export interface DocumentActorContext {
   actorId: string;
   actorRole: ActorRoleLabel;
   scope: ActorScope;
+  authType: 'normal' | 'fast_access' | 'admin';
   adminLevel?: string | null;
   email?: string | null;
 }

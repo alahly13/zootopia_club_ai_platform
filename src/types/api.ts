@@ -12,6 +12,11 @@ export type FacultyScienceFastAccessAccountState =
   | 'fast_access_exists'
   | 'full_account_exists';
 
+export type FacultyScienceFastAccessProfileCompletionStage =
+  | 'pending_profile_completion'
+  | 'temporary_onboarding_complete'
+  | 'converted_to_full_account';
+
 export interface FacultyScienceFastAccessProfile {
   fullName?: string;
   universityCode?: string;
@@ -19,14 +24,22 @@ export interface FacultyScienceFastAccessProfile {
   academicYear?: string;
 }
 
+export interface FacultyScienceFastAccessPreflightRequest {
+  phoneNumber: string;
+}
+
+export interface FacultyScienceFastAccessPreflightResponse {
+  phoneNumber: string;
+  nextStep: 'otp_verification';
+  accountState: FacultyScienceFastAccessAccountState;
+}
+
 export interface FacultyScienceFastAccessStatusRequest {
   idToken: string;
-  intent: FacultyScienceFastAccessIntent;
 }
 
 export interface FacultyScienceFastAccessStatusResponse {
   phoneNumber: string;
-  intent: FacultyScienceFastAccessIntent;
   accountState: FacultyScienceFastAccessAccountState;
   recommendedNextStep: 'login' | 'register' | 'full_login';
   existingAccount?: {
@@ -44,6 +57,7 @@ export interface FacultyScienceFastAccessRequest {
 
 export interface FacultyScienceFastAccessResponse {
   customToken: string;
+  requiresProfileCompletion?: boolean;
   account: {
     uid: string;
     phoneNumber: string;
@@ -52,7 +66,19 @@ export interface FacultyScienceFastAccessResponse {
     temporaryAccessType: 'FacultyOfScienceFastAccess';
     temporaryAccessExpiresAt: string;
     fastAccessCredits: number;
+    profileCompletionStage: FacultyScienceFastAccessProfileCompletionStage;
   };
+}
+
+export interface FacultyScienceFastAccessProfileCompletionRequest {
+  profile: FacultyScienceFastAccessProfile;
+}
+
+export interface FacultyScienceFastAccessProfileCompletionResponse {
+  completed: boolean;
+  fastAccessCredits: number;
+  grantedCredits: number;
+  profileCompletionStage: 'temporary_onboarding_complete';
 }
 
 export interface FacultyScienceConversionRequest {

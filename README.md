@@ -32,9 +32,10 @@ Multi-platform deployment is driven by:
 - `deployment/runtime-manifest.json`: canonical deployment manifest, including the explicit Python extraction dependency path and platform contract files
 - `server/documentRuntime/python/requirements.txt`: canonical Python extraction requirements
 - `tools/deploymentRuntime.mjs`: shared verification/bootstrap helper
-- `Dockerfile`: canonical backend runtime adapter for backend-capable managed hosts
+- `render.yaml`: native Render backend contract
+- `Dockerfile`: container backend contract for platforms that still use containers
 
-Backend-capable managed hosts now converge on the shared `Dockerfile` contract, while Netlify and Vercel stay explicitly frontend-only.
+Render now uses the native helper-based backend path, while Netlify and Vercel stay explicitly frontend-only.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for:
 

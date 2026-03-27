@@ -30,6 +30,9 @@ const STATUS: Record<string, UserStatus> = {
   BLOCKED: 'Blocked',
 } as const;
 
+const USERNAME_RESOLUTION_TIMEOUT_MS = 8_000;
+const ADMIN_CLAIMS_SYNC_TIMEOUT_MS = 8_000;
+
 function normalizeAuthProviders(firebaseUser: FirebaseUser, existingProviders: string[] = []): string[] {
   const currentProviders = firebaseUser.providerData.map((p) => p.providerId);
   return Array.from(new Set([...existingProviders, ...currentProviders].filter(Boolean)));
@@ -59,7 +62,11 @@ function normalizeRoleFromClaimsOrIdentity(
   firebaseUser: FirebaseUser,
   claims: Record<string, unknown>,
   adminIdentity: { email: string; level: string; role: string } | undefined
-) {
+): {
+  isAdminClaim: boolean;
+  adminLevel: string | null;
+  role: User['role'];
+} {
   const claimRole = String(claims.role || '').toLowerCase();
   const isAdminClaim = claimRole === 'admin' || !!adminIdentity;
   const adminLevel = String(claims.adminLevel || adminIdentity?.level || '') || null;
@@ -81,6 +88,33 @@ async function getAuthHeaders(firebaseUser: FirebaseUser) {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${token}`,
   };
+}
+
+async function fetchJsonWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs: number,
+  timeoutMessage: string
+) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+
+    return response;
+  } catch (error: any) {
+    if (error?.name === 'AbortError') {
+      throw new Error(timeoutMessage);
+    }
+
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 export function useAuthActions(
@@ -126,20 +160,65 @@ export function useAuthActions(
           adminIdentity
         );
 
-        // If this is a reserved admin identity but claims are missing, request backend sync.
-        if (adminIdentity && String(claims.role || '').toLowerCase() !== 'admin') {
+        const triggerAdminClaimsSync = async () => {
+          if (!adminIdentity || String(claims.role || '').toLowerCase() === 'admin') {
+            return;
+          }
+
           try {
             const headers = await getAuthHeaders(firebaseUser);
-            await fetch('/api/admin/set-claims', {
-              method: 'POST',
-              headers,
-              body: JSON.stringify({ uid: firebaseUser.uid, email: firebaseUser.email }),
+            const response = await fetchJsonWithTimeout(
+              '/api/admin/set-claims',
+              {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ uid: firebaseUser.uid, email: firebaseUser.email }),
+              },
+              ADMIN_CLAIMS_SYNC_TIMEOUT_MS,
+              'Admin claims synchronization timed out.'
+            );
+
+            if (!response.ok) {
+              const responseText = await response.text().catch(() => '');
+              throw new Error(
+                responseText || `Admin claims sync failed with status ${response.status}.`
+              );
+            }
+
+            logger.info('Triggered admin claims sync for reserved admin identity', {
+              area: 'auth',
+              event: 'admin-claims-sync-triggered',
+              email: firebaseUser.email,
+              uid: firebaseUser.uid,
             });
-            logger.info('Triggered admin claims sync for', firebaseUser.email);
-          } catch (e) {
-            logger.error('Failed to trigger admin claims sync', e);
+
+            void firebaseUser.getIdToken(true).catch((error) => {
+              logger.warn('Failed to refresh Firebase token after admin claims sync', {
+                area: 'auth',
+                event: 'admin-claims-token-refresh-failed',
+                email: firebaseUser.email,
+                uid: firebaseUser.uid,
+                error,
+              });
+            });
+          } catch (error) {
+            logger.warn('Admin claims sync did not complete during profile hydration', {
+              area: 'auth',
+              event: 'admin-claims-sync-nonblocking-failure',
+              email: firebaseUser.email,
+              uid: firebaseUser.uid,
+              error,
+            });
           }
-        }
+        };
+
+        /**
+         * Reserved-admin claim repair is important, but it must never block
+         * login/profile hydration. Frontend and backend admin detection both
+         * already have reserved-email compatibility paths, so treat claims sync
+         * as a bounded background repair task instead of a critical-path await.
+         */
+        void triggerAdminClaimsSync();
 
         if (docSnap.exists()) {
           const existingUser = docSnap.data() as User;
@@ -334,7 +413,14 @@ export function useAuthActions(
 
       if (!identifier.includes('@')) {
         try {
-          const response = await fetch(`/api/resolve-username?username=${encodeURIComponent(identifier)}`);
+          const response = await fetchJsonWithTimeout(
+            `/api/resolve-username?username=${encodeURIComponent(identifier)}`,
+            {
+              method: 'GET',
+            },
+            USERNAME_RESOLUTION_TIMEOUT_MS,
+            'Username lookup timed out. Please try again or use your email.'
+          );
           if (!response.ok) {
             if (response.status === 404) {
               throw new Error('No account found with this username.');
@@ -554,7 +640,14 @@ export function useAuthActions(
 
       if (!identifier.includes('@')) {
         try {
-          const response = await fetch(`/api/resolve-username?username=${encodeURIComponent(identifier)}`);
+          const response = await fetchJsonWithTimeout(
+            `/api/resolve-username?username=${encodeURIComponent(identifier)}`,
+            {
+              method: 'GET',
+            },
+            USERNAME_RESOLUTION_TIMEOUT_MS,
+            'Admin username lookup timed out. Please try again or use your email.'
+          );
           if (!response.ok) {
             if (response.status === 404) {
               throw new Error('No account found with this username.');

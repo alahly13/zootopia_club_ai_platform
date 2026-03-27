@@ -9,7 +9,7 @@ ZOOTOPIA CLUB - MASTER PROJECT LEDGER & SYSTEM RECORD
 4. UPDATE THIS FILE immediately after making any significant changes (new features, architecture shifts, new dependencies, etc.).
 5. APPEND to the Change Log at the bottom; do not overwrite historical context.
 6. Keep modifications dated, structured, and professional.
-
+rnd_AcBwjgenUr7jtPSn1p0PlOvT3aoh
 ================================================================================
 1. PROJECT IDENTITY
 ================================================================================
@@ -18,7 +18,13 @@ ZOOTOPIA CLUB - MASTER PROJECT LEDGER & SYSTEM RECORD
 - Description: A comprehensive, multi-tool platform offering AI-driven educational resources, including quiz generation, document analysis, study tools, image/video generation, and interactive chatbots.
 - Status: Active development. Features a highly modular multi-model orchestration system.
 - Ledger Generated/Updated: 2026-03-26
-
+cd "D:\Zootopia Club AI"
+python -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r server\documentRuntime\python\requirements.txt
+python -m pip list
 ================================================================================
 2. PROJECT STRUCTURE OVERVIEW
 ================================================================================
@@ -5028,3 +5034,355 @@ pm run build\ successfully.
     - passed after this change.
   - `node tools/deploymentRuntime.mjs python-detect`
     - now reaches the real repo-local Python executable correctly on Windows and fails for the real reason when packages are missing, instead of failing behind the old PowerShell invocation bug.
+
+- Date: 2026-03-27
+- Area: Admin Authentication / Infinite Loading / Bounded Claims Sync
+- Summary: Fixed the admin-login hang by removing an unbounded admin-claims sync request from the critical profile-hydration path and adding an explicit timeout/fail-safe around the admin login submit flow.
+- Root Cause:
+  - The admin login path in `src/auth/Login.tsx` awaited `adminLogin(...)`, which awaited `syncUserWithFirestore(...)` in `src/auth/hooks/useAuthActions.ts`.
+  - Inside `syncUserWithFirestore(...)`, reserved admin identities triggered `fetch('/api/admin/set-claims', ...)` and awaited it before profile hydration could finish.
+  - That request had no timeout and no non-blocking fallback. If the backend route stalled, the browser kept waiting, so the login page stayed on `Authenticating admin...` without success, redirect, error, or recovery.
+  - This affected the admin lane specifically because only the reserved-admin branch triggered the custom-claims repair call.
+- Files Updated:
+  - `src/auth/hooks/useAuthActions.ts`
+  - `src/auth/Login.tsx`
+  - `ZOOTOPIA_PROJECT_LEDGER.txt`
+- Safe Fix Implemented:
+  - `src/auth/hooks/useAuthActions.ts`
+    - Added `fetchJsonWithTimeout(...)` using `AbortController` for bounded fetch behavior.
+    - Added explicit timeout budgets for username lookup and admin-claims sync.
+    - Switched reserved-admin claims repair to a bounded background task instead of awaiting it on the critical login/profile-hydration path.
+    - Kept structured diagnostics through the existing logger when claims sync fails or times out.
+  - `src/auth/Login.tsx`
+    - Wrapped `adminLogin(...)` in a hard timeout via `withTimeout(...)`.
+    - Added explicit `try/catch/finally` coverage plus structured diagnostics.
+    - Ensured the UI leaves `processing` on every failure branch by routing failures through `setError(...)`.
+- Why The Spinner Never Ended:
+  - The login screen set the status to `Authenticating admin...`, then waited on a promise chain that included a network request with no timeout.
+  - Because that promise could remain pending forever, the submit handler never reached success or catch, so the loading state never exited.
+  - The broader auth bootstrap logic already had recovery timers, but the admin submit handler itself still had an unbounded promise on its path.
+- What Must Be Preserved:
+  - Admin claims synchronization must remain non-blocking relative to admin login/profile hydration.
+  - Any admin-only verification fetch added in the future must have a bounded timeout and user-visible failure path.
+  - Frontend admin detection may assist routing/UX, but backend authorization remains the security boundary.
+  - Do not reintroduce awaited network side effects into the critical admin login completion path unless they are explicitly time-bounded and have a safe recovery path.
+- Verification:
+  - The updated code now guarantees:
+    - a timeout on admin username resolution
+    - a timeout on reserved-admin claims repair
+    - a timeout on the admin login submit path itself
+    - a `catch`/error exit instead of indefinite `processing`
+
+- Date: 2026-03-27
+- Area: Cross-Platform Dependencies / Native Render Deployment / Linux Install Safety
+- Summary: Removed root-pinned Windows-native build binaries from the Node dependency graph, normalized the Vite/Tailwind build-tool ownership, regenerated the lockfile, and switched Render back to a native Node deployment contract instead of Docker.
+- Root Cause:
+  - `package.json` directly declared Windows-only native packages:
+    - `@tailwindcss/oxide-win32-x64-msvc`
+    - `lightningcss-win32-x64-msvc`
+  - Those packages are host-specific binaries, not cross-platform application dependencies.
+  - Because they were pinned at the root project level, Linux hosts such as Render attempted to install them as normal dependencies and failed before Vite/Tailwind could finish setting up.
+  - `vite` was also duplicated across `dependencies` and `devDependencies`, which made the build-tool ownership noisier than necessary.
+  - `render.yaml` had been switched to a Docker-backed service contract, which no longer matched the requested native Render deployment path.
+- Files Updated:
+  - `package.json`
+  - `package-lock.json`
+  - `render.yaml`
+  - `deployment/runtime-manifest.json`
+  - `README.md`
+  - `DEPLOYMENT.md`
+  - `ZOOTOPIA_PROJECT_LEDGER.txt`
+- Safe Fix Implemented:
+  - `package.json`
+    - removed direct root dependencies:
+      - `@tailwindcss/oxide-win32-x64-msvc`
+      - `lightningcss-win32-x64-msvc`
+    - moved build-time tooling to `devDependencies`:
+      - `@tailwindcss/vite`
+      - `@vitejs/plugin-react`
+      - `lightningcss`
+      - `vite`
+    - kept the generic cross-platform packages only.
+  - `package-lock.json`
+    - regenerated from the corrected manifest so the root package block no longer pins the Windows-only packages directly.
+    - remaining platform-native packages are now upstream optional/transitive entries rather than app-level requirements.
+  - `render.yaml`
+    - switched Render back to native `env: node`
+    - explicit build command:
+      - `npm run deploy:render:build`
+    - explicit start command:
+      - `npm run start`
+    - explicit environment:
+      - `NODE_ENV=production`
+      - `DOCUMENT_RUNTIME_PYTHON_EXECUTABLE=.venv/bin/python`
+    - kept `/api/health` explicit.
+  - `deployment/runtime-manifest.json`
+    - reclassified Render from `shared-docker-backend` to `shared-helper-bootstrap`
+    - aligned Render contract paths and commands with the native helper-based deployment path
+  - `README.md` and `DEPLOYMENT.md`
+    - documented Render as native, not Docker-based
+    - added a warning against committing OS-specific binary packages to root dependencies
+- What Future Contributors Must Preserve:
+  - Do not add host-specific binary packages like `*-win32-*`, `*-linux-*`, or similar directly to root `dependencies`.
+  - Keep only the generic tool packages in the project manifest and let their optional dependency graph resolve the correct host binary.
+  - Keep Render aligned to the native helper-based deployment path unless there is a deliberate, documented platform strategy change.
+  - Keep `server/documentRuntime/python/requirements.txt` and `.venv` installation explicit in the Render build helper path.
+- Verification:
+  - `npm install --package-lock-only --ignore-scripts`
+    - completed successfully after rerouting npm cache into a repo-local writable cache directory because the default global cache path was blocked in this environment.
+  - `npm run verify:deployment-contract`
+    - passed with Render now reported as `shared-helper-bootstrap`.
+  - `npm run build`
+    - could not be conclusively verified in this environment because the build command either hit sandbox `EPERM` process-spawn limits or stalled without returning a completed result under the available execution environment.
+    - This means the dependency-contract fix is implemented and the root Linux blocker is removed, but final end-to-end build confirmation should still be re-run in a normal local shell or the target Render environment.
+
+[2026-03-27]
+- Area: Login Screen / Faculty Fast Access Card Visual Refinement
+- Files: /src/auth/Login.tsx, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Refined the Faculty Fast Access login card so the right-side decoration uses a clean academic icon treatment instead of a blurred glow.
+- Reason: To keep the fast-access CTA polished and premium while removing the foggy visual patch from the card's right edge.
+- Technical Details:
+  - Kept the existing `lucide-react` `Building` badge treatment inside the Faculty Fast Access card and tightened its styling to a crisper, non-glowy inset finish that better matches the login screen's premium dark theme.
+  - Preserved the card's structure, spacing, sizing, rounded corners, border, motion, click handler, text, translation usage, and auth flow; only the decorative badge styling in `src/auth/Login.tsx` was adjusted.
+- Risks / Dependencies:
+  - This refinement is intentionally scoped to the `science-fast-access` CTA block in `src/auth/Login.tsx`; no backend, route, or state-management contracts were changed.
+  - Visual consistency depends on the existing `lucide-react` icon system already used across the login screen; no package or compatibility changes were introduced.
+- Notes:
+  - Behavior and layout contracts were preserved intentionally.
+  - Responsive and dark-mode behavior were kept intact by limiting the change to the existing absolute decoration slot.
+
+[2026-03-27]
+- Area: Login Screen / Faculty Fast Access CTA Decoration Follow-up
+- Files: /src/auth/Login.tsx, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Replaced the right-side blurred glow in the Faculty Fast Access login CTA with a clean university badge using the existing icon system.
+- Reason: To remove the foggy patch from the card while keeping the premium dark presentation and preserving the current login/auth behavior.
+- Technical Details:
+  - Replaced the absolute radial-gradient decoration inside the Faculty Fast Access button with an absolute, non-interactive `Building` icon badge from `lucide-react`.
+  - Kept the button's existing structure, spacing, border, rounded corners, hover motion, click handler, text, translations, and fast-access routing logic unchanged.
+- Risks / Dependencies:
+  - This change is intentionally limited to the login CTA decoration block in `src/auth/Login.tsx`; no backend, auth, or route contracts were modified.
+  - The visual treatment depends on the existing `lucide-react` package already declared in `package.json` and `package-lock.json`, with React 19 compatibility unchanged.
+- Notes:
+  - The premium dark theme and responsive layout were preserved by reusing the existing absolute decoration slot.
+  - `npm run lint` was started for verification but did not complete within the available execution window in this environment.
+
+[2026-03-27]
+- Area: Faculty Fast Access / Progressive Phone-First UX Simplification
+- Files: /src/auth/Login.tsx, /src/types/api.ts, /src/auth/FastAccessProfileCompletionModal.tsx, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Refactored the Faculty Fast Access login experience into a minimal progressive phone -> OTP flow, removed the visible login/register choice UI, and kept the existing post-login completion modal as the required checkpoint for granting the initial 3 credits.
+- Reason: To match the product requirement for a premium, phone-first Fast Access experience that feels short, confident, and modern without weakening OTP verification, backend authority, or temporary-account isolation.
+- Technical Details:
+  - Simplified `src/auth/Login.tsx` so the Fast Access lane now renders only the current step:
+    - phone entry first,
+    - OTP verification second,
+    - no visible choice cards,
+    - no step-strip,
+    - no in-flow student-details panel.
+  - Switched the Fast Access submit flow to use the existing backend preflight contract first (`preflightFacultyScienceFastAccess`) so the UI can infer whether the phone maps to:
+    - an existing temporary fast-access account,
+    - a new temporary-registration path,
+    - or a full account that must go back to normal login.
+  - Preserved the security boundary that OTP is still required for both existing and new phone numbers; the phone lookup only determines the backend path after OTP succeeds.
+  - Reused the existing backend-authenticated completion architecture by keeping profile completion in `FastAccessProfileCompletionModal` after sign-in, with only two required fields (`fullName`, `universityCode`) and a tightened premium copy surface.
+  - Added/confirmed frontend type contracts in `src/types/api.ts` for:
+    - fast-access preflight,
+    - profile-completion stage metadata,
+    - and completion response payloads used by the current backend/service layer.
+  - Added small UX hardening in the login flow:
+    - resets inferred account state when the phone changes,
+    - preserves OTP resend/change-phone actions as lightweight secondary controls,
+    - and adds phone/OTP autocomplete hints for a better mobile-first verification experience.
+- Risks / Dependencies:
+  - This refactor depends on the already-existing backend endpoints and behavior in `server.ts` and `src/services/fastAccessService.ts`; those contracts were intentionally preserved, not redesigned.
+  - The required post-login popup timing continues to rely on the existing popup orchestration and route-guard architecture already mounted in `src/App.tsx`, `src/components/ProtectedRoute.tsx`, `src/components/MainLayout.tsx`, and `src/constants/fastAccessPolicy.ts`; those files were intentionally left untouched in this pass.
+  - Fast Access temporary-account isolation, 3-credit grant timing, zero-credit restriction behavior, normal full-account auth, and admin flows remain bound to the existing backend-authoritative rules.
+- Notes:
+  - Full-account sign-in, full registration, admin login, admin management flows, and non-fast-access tool surfaces were intentionally left structurally unchanged.
+  - Verification status:
+    - `npm run lint` still reports pre-existing TypeScript errors outside this Fast Access scope.
+    - A targeted TypeScript check over the touched Fast Access files did not surface new errors in the edited flow, but it still pulled in existing unrelated project errors from `useAuthActions.ts` and `utils/logger.ts`.
+
+[2026-03-27]
+- Area: Auth / Redis / Session Architecture / Admin + Fast Access Isolation
+- Files:
+  - `server.ts`
+  - `server/authSessionService.ts`
+  - `server/cache/redisBackedStore.ts`
+  - `server/documentRuntime/types.ts`
+  - `server/documentRuntime/actorScope.ts`
+  - `server/documentRuntime/runtimeStateService.ts`
+  - `src/auth/AuthContext.tsx`
+  - `src/auth/Login.tsx`
+  - `src/auth/hooks/useAuthActions.ts`
+  - `src/auth/session/types.ts`
+  - `src/auth/session/authMode.ts`
+  - `src/auth/session/storage.ts`
+  - `src/auth/session/baseAuthSessionManager.ts`
+  - `src/auth/session/normalAuthSessionManager.ts`
+  - `src/auth/session/fastAccessAuthSessionManager.ts`
+  - `src/auth/session/adminAuthSessionManager.ts`
+  - `src/auth/session/sessionApi.ts`
+  - `src/auth/session/index.ts`
+  - `src/components/ProtectedRoute.tsx`
+  - `src/components/AuthScopedDocumentBoundary.tsx`
+  - `src/hooks/useToolScopedModelSelection.ts`
+  - `src/features/study-tools/pages/StudyToolsPage.tsx`
+  - `src/ai/toolModelSelection.ts`
+  - `src/constants/welcomeFlow.ts`
+  - `src/utils.ts`
+  - `.env.example`
+  - `tests/authSessionScoping.test.ts`
+  - `tests/documentRuntime.test.ts`
+  - `tests/documentRuntimeSmoke.ts`
+  - `tests/documentPromptContextResolver.test.ts`
+  - `tests/documentCleanupCoordinator.test.ts`
+  - `tests/modelRouting.test.ts`
+  - `ZOOTOPIA_PROJECT_LEDGER.txt`
+- Summary:
+  - Refactored the live auth/session/cache path toward three isolated login lanes:
+    - `normal`
+    - `fast_access`
+    - `admin`
+  - Added dedicated frontend session managers per auth mode, a richer backend auth-session snapshot model backed by Redis, auth-mode-aware route enforcement for admin pages, auth-mode-aware document runtime scoping, and scoped browser-state cleanup to prevent cross-mode/session leakage.
+- Root Cause:
+  - The platform previously mixed three different concerns:
+    - Firebase identity state
+    - loosely persisted browser auth hints
+    - role-based UI decisions
+  - Admin UI access was still largely keyed off generic admin identity (`isAdmin`) rather than the dedicated admin session lane.
+  - Fast Access used an isolated OTP step, but the final platform session still converged on the primary Firebase auth instance, so isolation depended on claims/account metadata and not on separate lifecycle managers.
+  - Runtime/document/tool state could survive account or auth-mode switches because several browser and Redis surfaces were not explicitly auth-mode scoped.
+  - Older local-storage keys (`zootopia_admin_session`, `zootopia_session_expiry`) and legacy unscoped tool-model keys existed without a single authoritative migration boundary.
+- Technical Details:
+  - Backend session authority:
+    - Added/activated `server/authSessionService.ts` as the live auth-session owner for the current server path.
+    - Added richer server-side session metadata:
+      - `authType`
+      - `sessionState`
+      - `sessionSource`
+      - `sessionFingerprint`
+      - `issuedAt`
+      - `refreshedAt`
+      - `expiresAt`
+      - `lastActivityAt`
+      - `rehydrationStatus`
+      - `reEntryStatus`
+      - `restoreFailureReason`
+      - `logoutReason`
+      - `adminVerificationStatus`
+      - `fastAccessVerificationStatus`
+      - `accountCompletenessStatus`
+      - cache/session/document-runtime namespace references
+    - Added focused session endpoints:
+      - `POST /api/auth/session/bootstrap`
+      - `POST /api/auth/session/refresh`
+      - `POST /api/auth/session/logout`
+    - Added expected auth-mode handling to middleware validation so backend routes can distinguish:
+      - generic authenticated requests
+      - admin-only requests
+      - fast-access-only requests
+  - Redis/cache organization:
+    - Added `server/cache/redisBackedStore.ts` for Redis connection management plus a bounded in-memory fallback for local/dev-safe operation.
+    - Active auth-session namespace contract:
+      - current snapshot:
+        - `zootopia:auth:<authType>:users:<uid>:current`
+      - historical/session snapshot:
+        - `zootopia:auth:<authType>:users:<uid>:sessions:<sessionId>`
+      - invalidation marker:
+        - `zootopia:auth:<authType>:users:<uid>:invalidation`
+      - derived cache namespace stored in session metadata:
+        - `zootopia:auth:<authType>:users:<uid>:cache`
+      - derived document-runtime namespace stored in session metadata:
+        - `document-runtime:<authType>:<uid>`
+    - Document runtime Redis keys were upgraded from role-only/user-only scoping to auth-mode-aware scoping:
+      - `zootopia:runtime:<workspaceScope>:<authType>:<actorId>:*`
+    - This prevents runtime extraction/active-document collisions between:
+      - normal user sessions
+      - fast-access sessions
+      - admin sessions
+  - Session managers and browser persistence:
+    - Added dedicated frontend managers:
+      - `normalAuthSessionManager`
+      - `fastAccessAuthSessionManager`
+      - `adminAuthSessionManager`
+    - Added browser persistence contract:
+      - active mode key:
+        - `zootopia_auth_session_mode_v2`
+      - per-mode snapshots:
+        - `zootopia_auth_session_v2:normal`
+        - `zootopia_auth_session_v2:fast_access`
+        - `zootopia_auth_session_v2:admin`
+    - `AuthContext` now restores from the stored per-mode snapshot in `restoring` state first, then revalidates against Firebase + backend session state before treating the session as ready.
+    - Standard email/password and Google login flows now explicitly prime the `normal` auth mode before sign-in.
+    - Admin login now explicitly primes the `admin` auth mode before sign-in.
+    - Fast Access custom-token sign-in now explicitly primes the `fast_access` auth mode before the primary Firebase session is established.
+  - Isolation and invalidation:
+    - Logging into one auth mode now clears sibling frontend auth-session managers.
+    - Backend bootstrap now invalidates sibling auth-mode Redis sessions for the same uid to avoid stale cross-mode revival.
+    - Logout remains scoped to the active auth mode, but replace-on-login now clears old sibling auth-mode remnants more aggressively.
+    - `ProtectedRoute` now requires `authMode === 'admin'` for admin-only and primary-admin-only route access instead of trusting generic admin identity alone.
+  - Tool/document/browser cache separation:
+    - Tool model persistence moved to auth-session-scoped keys:
+      - `zootopia_tool_model:<sessionScopeKey>:<toolScopeId>`
+    - Legacy unscoped tool-model keys are still read as fallback during migration:
+      - `zootopia_tool_model:<toolScopeId>`
+    - `AuthScopedDocumentBoundary` now clears both:
+      - the shared in-memory document context
+      - the in-memory AI response cache
+      whenever the authenticated session scope changes.
+    - `clearSessionState(...)` also clears the AI response cache on logout/reset.
+  - TTL policy:
+    - `AUTH_SESSION_NORMAL_TTL_SEC`
+      - default `43200` seconds
+    - `AUTH_SESSION_FAST_ACCESS_TTL_SEC`
+      - default `21600` seconds
+    - `AUTH_SESSION_ADMIN_TTL_SEC`
+      - default `7200` seconds
+    - `AUTH_SESSION_INVALIDATION_TTL_SEC`
+      - default `86400` seconds
+    - Fast Access TTL is additionally bounded by `temporaryAccessExpiresAt` when present so expired temporary access cannot be stretched by a longer generic TTL.
+- Added / Removed Flows:
+  - Added:
+    - backend auth-session bootstrap/refresh/logout APIs
+    - dedicated frontend per-mode session managers
+    - auth-mode-aware admin route gating
+    - auth-mode-aware document runtime keying
+    - auth-mode-aware tool-model persistence
+    - auth-session-scope rehydration from persisted browser snapshots
+    - sibling auth-mode invalidation on replacement login
+  - Removed / replaced:
+    - implicit admin-route trust based only on `isAdmin`
+    - reliance on legacy generic local-session keys
+    - cross-mode reuse of unscoped tool-model local storage as the primary source of truth
+- Migration Notes:
+  - Legacy browser keys now cleared during auth boot / cleanup:
+    - `zootopia_admin_session`
+    - `zootopia_session_expiry`
+  - Legacy unscoped tool-model keys remain readable as fallback so older persisted selections are not silently lost during first use after upgrade.
+  - Stored auth snapshots are now upgraded into the new `restoring` flow and then normalized through the new server session model.
+  - `.env.example` was updated with the new auth-session Redis/TTL settings so deployment configs can match the live architecture intentionally.
+- Fallback Behavior:
+  - Auth-session Redis now supports in-memory fallback only when:
+    - `AUTH_SESSION_MEMORY_FALLBACK_ENABLED` is not disabled
+    - and `NODE_ENV !== production`
+  - Document runtime keeps its existing memory fallback behavior for local/dev/CI-safe execution.
+  - Backend auth middleware still supports controlled auto-recovery from a valid Firebase token when the current Redis session is absent, but the new flow now:
+    - rehydrates a richer namespaced session
+    - invalidates sibling auth-mode scopes on replacement
+    - and rejects admin-route access when the live auth mode is not `admin`
+- Verification:
+  - Passed targeted tests:
+    - `node_modules\.bin\tsx.cmd --test tests\authSessionScoping.test.ts tests\modelRouting.test.ts`
+    - `node_modules\.bin\tsx.cmd --test tests\documentPromptContextResolver.test.ts tests\documentCleanupCoordinator.test.ts`
+    - `node_modules\.bin\tsx.cmd --test tests\documentRuntime.test.ts`
+    - `node_modules\.bin\tsx.cmd tests\documentRuntimeSmoke.ts`
+  - `npm run lint`
+    - still fails because of pre-existing unrelated TypeScript issues outside this auth/session refactor, including existing errors in:
+      - `server/adminAccountDirectoryService.ts`
+      - `src/admin/components/CommunicationCenter.tsx`
+      - `src/App.tsx`
+      - `src/components/status/ResultPreviewContent.tsx`
+      - `src/services/emailDeliveryService.ts`
+      - `src/utils/exporters.ts`
+      - `tests/adminAccountDirectoryService.test.ts`
+    - The auth/session/document-runtime changes from this pass no longer appear in the remaining `tsc --noEmit` error list.

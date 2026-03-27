@@ -25,7 +25,10 @@ import { cn } from '../utils';
 import { storage, auth } from '../firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { convertFacultyFastAccessToFullAccount } from '../services/fastAccessService';
-import { FACULTY_FAST_ACCESS_CONVERSION_PROMPT } from '../constants/fastAccessPolicy';
+import {
+  FACULTY_FAST_ACCESS_CONVERSION_PROMPT,
+  isFastAccessProfileCompletionPending,
+} from '../constants/fastAccessPolicy';
 import { useLoadLifecycle } from '../hooks/useLoadLifecycle';
 import { ACCOUNT_DELETE_FLOW_ID, POPUP_FLOW_PRIORITY } from '../constants/popupFlows';
 
@@ -232,7 +235,11 @@ const Account = () => {
 
   const isTemporaryFacultyFastAccess =
     user?.isTemporaryAccess === true || user?.accountScope === 'faculty_science_fast_access';
-  const hasExhaustedFastAccessCredits = isTemporaryFacultyFastAccess && (user?.fastAccessCredits ?? 0) <= 0;
+  const hasPendingFastAccessProfile = isFastAccessProfileCompletionPending(user);
+  const hasExhaustedFastAccessCredits =
+    isTemporaryFacultyFastAccess &&
+    !hasPendingFastAccessProfile &&
+    (user?.fastAccessCredits ?? 0) <= 0;
 
   const handleConvertToFullAccount = async () => {
     if (!user) return;

@@ -177,27 +177,24 @@ export function isWelcomeEntryPath(pathname: string) {
 }
 
 export function resolveWelcomeContextKey(user: WelcomeContextUser | null | undefined) {
+  const modeKey =
+    user?.temporaryAccessType?.trim()
+      ? `temporary:${user.temporaryAccessType.trim().toLowerCase()}`
+      : user?.accountScope?.trim()
+        ? `scope:${user.accountScope.trim().toLowerCase()}`
+        : user?.role?.trim()
+          ? `role:${user.role.trim().toLowerCase()}`
+          : 'authenticated';
+
   if (user?.id?.trim()) {
-    return `user:${user.id.trim()}`;
+    return `user:${user.id.trim()}:${modeKey}`;
   }
 
   if (user?.email?.trim()) {
-    return `email:${user.email.trim().toLowerCase()}`;
+    return `email:${user.email.trim().toLowerCase()}:${modeKey}`;
   }
 
-  if (user?.temporaryAccessType?.trim()) {
-    return `temporary:${user.temporaryAccessType.trim().toLowerCase()}`;
-  }
-
-  if (user?.role?.trim()) {
-    return `role:${user.role.trim().toLowerCase()}`;
-  }
-
-  if (user?.accountScope?.trim()) {
-    return `scope:${user.accountScope.trim().toLowerCase()}`;
-  }
-
-  return 'authenticated';
+  return modeKey;
 }
 
 export function hasWelcomePopupBeenHandledInThisSession(contextKey: string) {

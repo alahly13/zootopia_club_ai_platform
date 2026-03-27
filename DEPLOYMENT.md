@@ -9,21 +9,35 @@ The deployment layer is intentionally split into:
 - `deployment/runtime-manifest.json`: canonical deployment manifest, including the explicit Python dependency path and the platform contract files
 - `server/documentRuntime/python/requirements.txt`: canonical Python extraction dependency source
 - `tools/deploymentRuntime.mjs`: shared bootstrap and verification helper
-- `Dockerfile`: portable backend runtime for backend-capable managed hosts
+- `render.yaml`: native Render service contract
+- `Dockerfile`: portable backend runtime for container-based hosts
 
 ## Strategy
 
 The repository now uses a hybrid deployment strategy:
 
 - shared manifest plus shared helper for validation and bootstrap
-- shared Docker backend for backend-capable managed hosts
+- native Render backend configuration
+- shared Docker backend for container-based managed hosts
 - explicit frontend-only configs for static hosts
 
 That means:
 
 - local development and generic Linux/VPS use the shared helper plus shell scripts
-- Render, Railway, Fly.io, Google Cloud Run, and generic container hosts use the shared `Dockerfile`
+- Render uses the native `render.yaml` plus the shared deployment helper
+- Railway, Fly.io, Google Cloud Run, and generic container hosts use the shared `Dockerfile`
 - Netlify and Vercel build only the frontend and do not claim to host the backend Python extractor
+
+## Cross-Platform Node Dependencies
+
+Do not add OS-specific native binary packages directly to `package.json`.
+
+Examples that must remain out of root dependencies:
+
+- `@tailwindcss/oxide-win32-x64-msvc`
+- `lightningcss-win32-x64-msvc`
+
+Keep only the generic packages such as `@tailwindcss/vite`, `tailwindcss`, `lightningcss`, and `vite`. Their upstream optional-dependency graph is what selects the correct host binary on Windows or Linux.
 
 ## Canonical Python Extraction Contract
 
@@ -103,14 +117,24 @@ The setup script installs Node dependencies, creates `.venv`, installs the canon
 
 ## Render
 
-Render now uses the shared Docker backend via `render.yaml` plus `Dockerfile`.
+Render now uses a native Node service contract via `render.yaml`.
 
-This avoids relying on Render-specific Node image behavior for Python availability. Render sees the same explicit Node + Python runtime contract as Railway, Fly.io, and Cloud Run:
+This keeps Render explicit without Docker:
 
-- Python requirements installed from `server/documentRuntime/python/requirements.txt`
-- backend entrypoint remains `server.ts`
-- runtime Python executable remains `/app/.venv/bin/python`
-- health path remains `/api/health`
+- build command: `npm run deploy:render:build`
+- start command: `npm run start`
+- runtime Python executable: `.venv/bin/python`
+- health path: `/api/health`
+
+The shared render build helper still:
+
+- verifies `deployment/runtime-manifest.json`
+- verifies `server/documentRuntime/python/requirements.txt`
+- installs Node dependencies with devDependencies preserved
+- creates `.venv`
+- installs the Python extraction requirements
+- verifies the Python worker
+- builds the frontend assets
 
 ## Netlify
 
@@ -146,13 +170,12 @@ Fly.io uses `fly.toml` plus the shared `Dockerfile`.
 
 Cloud Run uses `cloudbuild.yaml` to build and deploy the shared Docker image.
 
-That gives Cloud Run the same backend runtime contract as Render, Railway, and Fly.io instead of a separate platform-specific install path.
+That gives Cloud Run the same backend runtime contract as Railway and Fly.io instead of a separate platform-specific install path.
 
 ## Docker Fallback
 
 The `Dockerfile` is the portable backend contract for:
 
-- Render
 - Railway
 - Fly.io
 - Google Cloud Run

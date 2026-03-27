@@ -7,5 +7,3 @@ coverage/
 .venv/
 .env*
 !.env.example
-serviceAccountKey.json
-**/serviceAccountKey.json

@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { AIModel } from '../utils/aiModels';
 import { User } from '../utils';
+import { useAuth } from '../auth/AuthContext';
 import {
   buildToolModelStorageKey,
   readPersistedToolModelSelection,
@@ -8,6 +9,7 @@ import {
   resolveNextToolModelSelection,
   resolveToolSelectionScopeId,
 } from '../ai/toolModelSelection';
+import { resolveAuthSessionScopeKeyFromUser } from '../auth/session/authMode';
 
 export const useToolScopedModelSelection = (params: {
   toolId: string;
@@ -17,13 +19,18 @@ export const useToolScopedModelSelection = (params: {
   fallbackModelId?: string;
 }) => {
   const { toolId, selectionScopeId, models, user, fallbackModelId } = params;
+  const { sessionScopeKey } = useAuth();
   const resolvedSelectionScopeId = React.useMemo(
     () => resolveToolSelectionScopeId({ toolId, selectionScopeId }),
     [selectionScopeId, toolId]
   );
+  const actorScopeKey = React.useMemo(
+    () => sessionScopeKey || resolveAuthSessionScopeKeyFromUser(user) || 'anonymous',
+    [sessionScopeKey, user]
+  );
   const storageKey = React.useMemo(
-    () => buildToolModelStorageKey(resolvedSelectionScopeId),
-    [resolvedSelectionScopeId]
+    () => buildToolModelStorageKey(actorScopeKey, resolvedSelectionScopeId),
+    [actorScopeKey, resolvedSelectionScopeId]
   );
 
   /**
@@ -38,7 +45,7 @@ export const useToolScopedModelSelection = (params: {
       models,
       user,
       fallbackModelId,
-      persistedModelId: readPersistedToolModelSelection({ toolId, selectionScopeId }),
+      persistedModelId: readPersistedToolModelSelection({ actorScopeKey, toolId, selectionScopeId }),
     })
   );
 
@@ -49,7 +56,7 @@ export const useToolScopedModelSelection = (params: {
       models,
       user,
       fallbackModelId,
-      persistedModelId: readPersistedToolModelSelection({ toolId, selectionScopeId }),
+      persistedModelId: readPersistedToolModelSelection({ actorScopeKey, toolId, selectionScopeId }),
     });
 
     if (nextModelId && nextModelId !== selectedModelId) {
@@ -57,6 +64,7 @@ export const useToolScopedModelSelection = (params: {
       localStorage.setItem(storageKey, nextModelId);
     }
   }, [
+    actorScopeKey,
     fallbackModelId,
     models,
     selectionScopeId,

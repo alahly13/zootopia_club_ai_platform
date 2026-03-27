@@ -4,12 +4,19 @@ import { Lock, Sparkles, FileText, BarChart3, User } from 'lucide-react';
 import { motion } from 'motion/react';
 import { cn } from '../utils';
 import { useAuth } from '../auth/AuthContext';
-import { FACULTY_FAST_ACCESS_CONVERSION_PROMPT, isFacultyFastAccessUser } from '../constants/fastAccessPolicy';
+import {
+  FACULTY_FAST_ACCESS_CONVERSION_PROMPT,
+  isFacultyFastAccessUser,
+  isFastAccessProfileCompletionPending,
+} from '../constants/fastAccessPolicy';
 
 export const FastAccessLockedState: React.FC<{ pageLabel?: string }> = ({ pageLabel = 'this area' }) => {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const hasExhaustedFastAccessCredits = isFacultyFastAccessUser(user) && (user?.fastAccessCredits ?? 0) <= 0;
+  const hasExhaustedFastAccessCredits =
+    isFacultyFastAccessUser(user) &&
+    !isFastAccessProfileCompletionPending(user) &&
+    (user?.fastAccessCredits ?? 0) <= 0;
 
   return (
     <div className="min-h-[70vh] flex items-center justify-center p-4 sm:p-6 lg:p-8">

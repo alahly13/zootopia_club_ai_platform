@@ -71,19 +71,39 @@ test('internal future catalog models stay hidden from user-facing selectors', ()
 });
 
 test('tool-scoped storage keys are distinct per tool', () => {
-  assert.equal(buildToolModelStorageKey('chat'), 'zootopia_tool_model:chat');
-  assert.equal(buildToolModelStorageKey('analyze'), 'zootopia_tool_model:analyze');
-  assert.notEqual(buildToolModelStorageKey('chat'), buildToolModelStorageKey('analyze'));
+  assert.equal(
+    buildToolModelStorageKey('normal:user-1', 'chat'),
+    'zootopia_tool_model:normal:user-1:chat'
+  );
+  assert.equal(
+    buildToolModelStorageKey('normal:user-1', 'analyze'),
+    'zootopia_tool_model:normal:user-1:analyze'
+  );
+  assert.notEqual(
+    buildToolModelStorageKey('normal:user-1', 'chat'),
+    buildToolModelStorageKey('normal:user-1', 'analyze')
+  );
 });
 
 test('selection scopes stay isolated for assessment modes and study subtools', () => {
   assert.notEqual(
-    buildToolModelStorageKey('assessment-quiz'),
-    buildToolModelStorageKey('assessment-questions')
+    buildToolModelStorageKey('normal:user-1', 'assessment-quiz'),
+    buildToolModelStorageKey('normal:user-1', 'assessment-questions')
   );
   assert.notEqual(
-    buildToolModelStorageKey('study:summary'),
-    buildToolModelStorageKey('study:flashcards')
+    buildToolModelStorageKey('normal:user-1', 'study:summary'),
+    buildToolModelStorageKey('normal:user-1', 'study:flashcards')
+  );
+});
+
+test('tool-scoped storage keys stay isolated across auth modes for the same uid', () => {
+  assert.notEqual(
+    buildToolModelStorageKey('normal:user-1', 'chat'),
+    buildToolModelStorageKey('admin:user-1', 'chat')
+  );
+  assert.notEqual(
+    buildToolModelStorageKey('normal:user-1', 'chat'),
+    buildToolModelStorageKey('fast_access:user-1', 'chat')
   );
 });
 

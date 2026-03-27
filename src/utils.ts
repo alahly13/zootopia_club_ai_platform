@@ -11,14 +11,17 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export function cleanObject<T extends Record<string, unknown>>(obj: T): T {
-  const newObj = {} as T;
-  (Object.keys(obj) as Array<keyof T>).forEach((key) => {
-    if (obj[key] !== undefined) {
-      newObj[key] = obj[key];
+export function cleanObject<T extends object>(obj: T): T {
+  const source = obj as Record<string, unknown>;
+  const next: Record<string, unknown> = {};
+
+  Object.entries(source).forEach(([key, value]) => {
+    if (value !== undefined) {
+      next[key] = value;
     }
   });
-  return newObj;
+
+  return next as T;
 }
 
 export const COPYRIGHT = "Copyright (c) Elmahdy Abdallah Youssef. All rights reserved.\nDeveloped by Elmahdy Abdallah Youssef, Software Developer.\nClass of 2022, Faculty of Science, Cairo University, Zoology Department.";
@@ -174,6 +177,9 @@ export interface User {
     institution: 'Cairo University';
     faculty: 'Faculty of Science';
     onboardingMethod: 'firebase_phone_otp';
+    profileCompletionStage?: 'pending_profile_completion' | 'temporary_onboarding_complete' | 'converted_to_full_account';
+    profileCompletedAt?: string;
+    creditsGrantedAt?: string;
   };
   statusMessage?: string;
   statusContext?: {

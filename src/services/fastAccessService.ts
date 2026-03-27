@@ -3,7 +3,11 @@ import {
   FacultyScienceFastAccessAccountState,
   FacultyScienceConversionRequest,
   FacultyScienceConversionResponse,
+  FacultyScienceFastAccessPreflightRequest,
+  FacultyScienceFastAccessPreflightResponse,
   FacultyScienceFastAccessProfile,
+  FacultyScienceFastAccessProfileCompletionRequest,
+  FacultyScienceFastAccessProfileCompletionResponse,
   FacultyScienceFastAccessRequest,
   FacultyScienceFastAccessResponse,
   FacultyScienceFastAccessStatusRequest,
@@ -112,18 +116,48 @@ export function isFastAccessAccountState(
   );
 }
 
+export async function preflightFacultyScienceFastAccess(
+  payload: FacultyScienceFastAccessPreflightRequest
+): Promise<FacultyScienceFastAccessPreflightResponse> {
+  const phoneNumber = cleanString(payload.phoneNumber).replace(/\s+/g, '');
+  if (!/^\+\d{8,15}$/.test(phoneNumber)) {
+    throw new Error('Enter a valid phone number in international format.');
+  }
+  const response = await fetch('/api/auth/fast-access/faculty-science/preflight', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      phoneNumber,
+    }),
+  });
+
+  const data = await parseFastAccessResponse<FacultyScienceFastAccessPreflightResponse>(
+    response,
+    'Unable to prepare fast-access verification.'
+  );
+
+  if (!cleanString(data.phoneNumber)) {
+    throw new Error('Server returned an invalid phone number state.');
+  }
+
+  if (data.nextStep !== 'otp_verification') {
+    throw new Error('Server returned an invalid fast-access next step.');
+  }
+
+  if (!isFastAccessAccountState(data.accountState)) {
+    throw new Error('Server returned an invalid fast-access state.');
+  }
+
+  return data;
+}
+
 export async function checkFacultyScienceFastAccessStatus(
   payload: FacultyScienceFastAccessStatusRequest
 ): Promise<FacultyScienceFastAccessStatusResponse> {
   const idToken = cleanString(payload.idToken);
-  const intent = payload.intent;
 
   if (!idToken) {
     throw new Error('Missing verification token. Please request a new OTP.');
-  }
-
-  if (intent !== 'login' && intent !== 'register') {
-    throw new Error('Invalid fast-access intent.');
   }
 
   const response = await fetch('/api/auth/fast-access/faculty-science/status', {
@@ -131,7 +165,6 @@ export async function checkFacultyScienceFastAccessStatus(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       idToken,
-      intent,
     }),
   });
 
@@ -142,10 +175,6 @@ export async function checkFacultyScienceFastAccessStatus(
 
   if (!cleanString(data.phoneNumber)) {
     throw new Error('Server returned an invalid phone number state.');
-  }
-
-  if (data.intent !== intent) {
-    throw new Error('Server returned a mismatched fast-access intent.');
   }
 
   if (!isFastAccessAccountState(data.accountState)) {
@@ -197,15 +226,13 @@ export async function registerFacultyScienceFastAccess(
     throw new Error('Missing verification token. Please request a new OTP.');
   }
 
-  const requestBody: FacultyScienceFastAccessRequest = {
-    idToken,
-    profile: normalizeProfile(payload.profile),
-  };
-
   const response = await fetch('/api/auth/fast-access/faculty-science/verify', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(requestBody),
+    body: JSON.stringify({
+      idToken,
+      ...(payload.profile ? { profile: normalizeProfile(payload.profile) } : {}),
+    }),
   });
 
   const data = await parseFastAccessResponse<FacultyScienceFastAccessResponse>(
@@ -226,9 +253,35 @@ export async function registerFacultyScienceFastAccess(
 
 /**
  * Backward-compatible alias for older imports while the UI moves to explicit
- * `login` and `register` intent helpers.
+ * activation + profile-completion helpers.
  */
 export const completeFacultyScienceFastAccess = registerFacultyScienceFastAccess;
+
+export async function completeFacultyScienceFastAccessProfile(
+  token: string,
+  payload: FacultyScienceFastAccessProfileCompletionRequest
+): Promise<FacultyScienceFastAccessProfileCompletionResponse> {
+  const authToken = cleanString(token);
+  if (!authToken) {
+    throw new Error('Missing session token. Please sign in again.');
+  }
+
+  const response = await fetch('/api/auth/fast-access/faculty-science/complete-profile', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${authToken}`,
+    },
+    body: JSON.stringify({
+      profile: normalizeProfile(payload.profile),
+    }),
+  });
+
+  return parseFastAccessResponse<FacultyScienceFastAccessProfileCompletionResponse>(
+    response,
+    'Fast-access profile completion failed.'
+  );
+}
 
 export async function convertFacultyFastAccessToFullAccount(
   token: string,

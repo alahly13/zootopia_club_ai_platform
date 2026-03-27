@@ -105,11 +105,15 @@
     },
     "render": {
       "intent": "backend-capable",
-      "strategy": "shared-docker-backend",
+      "strategy": "shared-helper-bootstrap",
       "contractPaths": [
         "render.yaml",
-        "Dockerfile"
-      ]
+        "tools/deploymentRuntime.mjs",
+        "package.json"
+      ],
+      "buildCommand": "npm run deploy:render:build",
+      "startCommand": "NODE_ENV=production DOCUMENT_RUNTIME_PYTHON_EXECUTABLE=.venv/bin/python npm run start",
+      "verifyCommand": "npm run verify:deployment-contract"
     },
     "netlify": {
       "intent": "frontend-only",

@@ -9,8 +9,8 @@ import { getFirstAccessibleModelIdForTool, resolveModelAccess } from './modelAcc
  * override another tool's chosen model.
  */
 
-export const buildToolModelStorageKey = (toolId: string) =>
-  `zootopia_tool_model:${(toolId || '').trim().toLowerCase()}`;
+export const buildToolModelStorageKey = (actorScopeKey: string, toolId: string) =>
+  `zootopia_tool_model:${(actorScopeKey || 'anonymous').trim().toLowerCase()}:${(toolId || '').trim().toLowerCase()}`;
 
 type ResolveToolModelSelectionParams = {
   toolId: string;
@@ -88,6 +88,7 @@ export const resolveNextToolModelSelection = (
 };
 
 export const readPersistedToolModelSelection = (params: {
+  actorScopeKey: string;
   toolId: string;
   selectionScopeId?: string;
 }): string | undefined => {
@@ -95,12 +96,17 @@ export const readPersistedToolModelSelection = (params: {
     return undefined;
   }
 
-  const storageKey = buildToolModelStorageKey(
-    resolveToolSelectionScopeId({
-      toolId: params.toolId,
-      selectionScopeId: params.selectionScopeId,
-    })
-  );
+  const resolvedToolScopeId = resolveToolSelectionScopeId({
+    toolId: params.toolId,
+    selectionScopeId: params.selectionScopeId,
+  });
+  const storageKey = buildToolModelStorageKey(params.actorScopeKey, resolvedToolScopeId);
 
-  return window.localStorage.getItem(storageKey) || undefined;
+  const scopedSelection = window.localStorage.getItem(storageKey);
+  if (scopedSelection) {
+    return scopedSelection;
+  }
+
+  const legacyKey = `zootopia_tool_model:${resolvedToolScopeId}`;
+  return window.localStorage.getItem(legacyKey) || undefined;
 };

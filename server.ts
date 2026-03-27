@@ -31,6 +31,11 @@ import { UserService } from './server/userService';
 import { CommunicationService } from './server/communicationService';
 import { CodeService } from './server/codeService';
 import { createTraceId, logDiagnostic, normalizeError } from './server/diagnostics';
+import {
+  PlatformAuthType,
+  authSessionService,
+  resolvePlatformAuthType,
+} from './server/authSessionService.js';
 import { resolveProviderRuntimeByModel, resolveQwenRuntime } from './server/providerRuntime.js';
 import { listAdminAccountDirectory } from './server/adminAccountDirectoryService';
 import { applySecurityHeaders } from './server/securityHeaders';
@@ -276,6 +281,7 @@ const resolveDocumentActorContextFromRequest = (req: express.Request) => {
     role?: string | null;
     adminLevel?: string | null;
     isAdmin?: boolean;
+    authType?: PlatformAuthType;
   };
 
   if (!userContext?.uid) {
@@ -288,6 +294,7 @@ const resolveDocumentActorContextFromRequest = (req: express.Request) => {
     role: userContext.role,
     adminLevel: userContext.adminLevel,
     isAdmin: userContext.isAdmin,
+    authType: userContext.authType,
   });
 };
 
@@ -1034,6 +1041,48 @@ const resolveRoleContext = (
   };
 };
 
+const normalizeExpectedAuthType = (value: unknown): PlatformAuthType | null => {
+  return value === 'admin' || value === 'fast_access' || value === 'normal'
+    ? value
+    : null;
+};
+
+const normalizeAuthSessionBootstrapSource = (
+  value: unknown,
+  fallback: 'login' | 'restore' | 'refresh'
+): 'login' | 'restore' | 'refresh' => {
+  return value === 'login' || value === 'restore' || value === 'refresh'
+    ? value
+    : fallback;
+};
+
+const buildSessionBootstrapInput = (params: {
+  decodedToken: admin.auth.DecodedIdToken;
+  userData: Record<string, unknown>;
+  roleContext: ReturnType<typeof resolveRoleContext>;
+  expectedAuthType?: PlatformAuthType | null;
+  source: 'login' | 'restore' | 'refresh' | 'middleware_auto_recover' | 'logout';
+}) => {
+  const authType = resolvePlatformAuthType({
+    decodedToken: params.decodedToken as Record<string, unknown>,
+    userData: params.userData,
+    isAdmin: params.roleContext.isAdmin,
+  });
+
+  return {
+    authType,
+    input: {
+      decodedToken: params.decodedToken as admin.auth.DecodedIdToken & Record<string, unknown>,
+      userData: params.userData,
+      role: params.roleContext.role,
+      adminLevel: params.roleContext.adminLevel,
+      authType,
+      expectedAuthType: params.expectedAuthType || null,
+      source: params.source,
+    },
+  };
+};
+
 const isPrimaryAdmin = (userContext: any): boolean => {
   return userContext?.adminLevel === 'primary';
 };
@@ -1337,6 +1386,60 @@ const validateFastAccessProfile = (input: unknown) => {
   };
 };
 
+const normalizeFastAccessProfileCompletionStage = (
+  value: unknown,
+  fallback: 'pending_profile_completion' | 'temporary_onboarding_complete' | 'converted_to_full_account' = 'temporary_onboarding_complete'
+) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'pending_profile_completion') return 'pending_profile_completion' as const;
+  if (normalized === 'temporary_onboarding_complete') return 'temporary_onboarding_complete' as const;
+  if (normalized === 'converted_to_full_account') return 'converted_to_full_account' as const;
+  return fallback;
+};
+
+const hasCompletedFastAccessProfileData = (
+  userData: Record<string, unknown> | null,
+  tempData: Record<string, unknown> | null
+) => {
+  const tempProfile =
+    typeof tempData?.profile === 'object' && tempData?.profile
+      ? tempData.profile as Record<string, unknown>
+      : null;
+
+  const fullName =
+    normalizeOptionalString(userData?.name) ||
+    normalizeOptionalString(tempProfile?.fullName) ||
+    '';
+  const universityCode =
+    normalizeOptionalString(userData?.universityCode) ||
+    normalizeOptionalString(tempProfile?.universityCode) ||
+    '';
+
+  return Boolean(fullName) && Boolean(universityCode);
+};
+
+const resolveFastAccessProfileCompletionStage = (
+  userData: Record<string, unknown> | null,
+  tempData: Record<string, unknown> | null
+) => {
+  const metadata =
+    typeof userData?.fastAccessMetadata === 'object' && userData.fastAccessMetadata
+      ? userData.fastAccessMetadata as Record<string, unknown>
+      : null;
+
+  const explicitStage =
+    normalizeOptionalString(metadata?.profileCompletionStage) ||
+    normalizeOptionalString(tempData?.profileCompletionStage);
+
+  if (explicitStage) {
+    return normalizeFastAccessProfileCompletionStage(explicitStage);
+  }
+
+  return hasCompletedFastAccessProfileData(userData, tempData)
+    ? 'temporary_onboarding_complete'
+    : 'pending_profile_completion';
+};
+
 const normalizeAuthProviderList = (value: unknown): string[] => {
   if (!Array.isArray(value)) {
     return [];
@@ -1381,9 +1484,18 @@ const logAdminUserAction = async (
    * Do not collapse these checks into frontend guards or UI visibility rules.
    * Backend middleware remains the security boundary for privileged access.
    */
-  const authMiddleware = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const resolveRequestUserContext = async (
+    req: express.Request,
+    expectedAuthType?: PlatformAuthType
+  ) => {
     const idToken = req.headers.authorization?.split('Bearer ')[1];
-    if (!idToken) return res.status(401).json({ success: false, error: 'Unauthorized: Missing token' });
+    if (!idToken) {
+      return {
+        ok: false as const,
+        statusCode: 401,
+        payload: { success: false, error: 'Unauthorized: Missing token' },
+      };
+    }
 
     try {
       const decodedToken = await admin.auth().verifyIdToken(idToken);
@@ -1393,71 +1505,263 @@ const logAdminUserAction = async (
 
       if (!roleContext.isAdmin && ['suspended', 'blocked', 'rejected'].includes(roleContext.normalizedStatus)) {
         const statusContext = (userData.statusContext || {}) as Record<string, unknown>;
-        return res.status(403).json({
-          success: false,
-          error: 'Account access is currently restricted.',
-          code: 'ACCOUNT_RESTRICTED',
-          accountStatus: String(userData.status || ''),
-          statusMessage:
-            normalizeOptionalString(statusContext.suspensionReason) ||
-            normalizeOptionalString(userData.statusMessage) ||
-            null,
-          reinstatementMessage:
-            normalizeOptionalString(statusContext.reactivationMessage) || null,
-        });
+        return {
+          ok: false as const,
+          statusCode: 403,
+          payload: {
+            success: false,
+            error: 'Account access is currently restricted.',
+            code: 'ACCOUNT_RESTRICTED',
+            accountStatus: String(userData.status || ''),
+            statusMessage:
+              normalizeOptionalString(statusContext.suspensionReason) ||
+              normalizeOptionalString(userData.statusMessage) ||
+              null,
+            reinstatementMessage:
+              normalizeOptionalString(statusContext.reactivationMessage) || null,
+          },
+        };
       }
 
-      (req as any).userContext = {
-        uid: decodedToken.uid,
-        email: decodedToken.email,
-        role: roleContext.role,
-        adminLevel: roleContext.adminLevel,
-        isAdmin: roleContext.isAdmin,
+      if (expectedAuthType === 'admin' && ['suspended', 'blocked', 'rejected'].includes(roleContext.normalizedStatus)) {
+        return {
+          ok: false as const,
+          statusCode: 403,
+          payload: {
+            success: false,
+            error: 'Forbidden: Admin account is not active',
+          },
+        };
+      }
+
+      const sessionBootstrap = buildSessionBootstrapInput({
+        decodedToken,
+        userData,
+        roleContext,
+        expectedAuthType,
+        source: 'middleware_auto_recover',
+      });
+
+      const sessionValidation = await authSessionService.validateSession({
+        ...sessionBootstrap.input,
+        autoRecover: true,
+      });
+
+      if (sessionValidation.ok === false) {
+        return {
+          ok: false as const,
+          statusCode: sessionValidation.statusCode,
+          payload: {
+            success: false,
+            error: sessionValidation.error,
+            code: sessionValidation.code,
+            sessionState: sessionValidation.session?.sessionState || null,
+          },
+        };
+      }
+
+      if (expectedAuthType && sessionValidation.session.authType !== expectedAuthType) {
+        return {
+          ok: false as const,
+          statusCode: expectedAuthType === 'admin' ? 403 : 409,
+          payload: {
+            success: false,
+            error:
+              expectedAuthType === 'admin'
+                ? 'Forbidden: Admin access required'
+                : expectedAuthType === 'fast_access'
+                  ? 'Only temporary Faculty fast-access sessions may access this route.'
+                  : 'Authentication mode mismatch detected.',
+            code: 'AUTH_MODE_MISMATCH',
+            authType: sessionValidation.session.authType,
+          },
+        };
+      }
+
+      return {
+        ok: true as const,
+        userContext: {
+          uid: decodedToken.uid,
+          email: decodedToken.email || null,
+          role: roleContext.role,
+          adminLevel: roleContext.adminLevel,
+          isAdmin: roleContext.isAdmin,
+          authType: sessionValidation.session.authType,
+          authSession: sessionValidation.session,
+        },
       };
-      next();
     } catch (error) {
-      res.status(401).json({ success: false, error: 'Unauthorized: Invalid token' });
+      return {
+        ok: false as const,
+        statusCode: 401,
+        payload: {
+          success: false,
+          error: 'Unauthorized: Invalid token',
+          details: normalizeError(error),
+        },
+      };
     }
+  };
+
+  const authMiddleware = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const resolved = await resolveRequestUserContext(req);
+    if (!resolved.ok) {
+      return res.status(resolved.statusCode).json(resolved.payload);
+    }
+
+    (req as any).userContext = resolved.userContext;
+    next();
   };
 
   // Strong Admin Authorization Middleware
   const adminMiddleware = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const resolved = await resolveRequestUserContext(req, 'admin');
+    if (!resolved.ok) {
+      return res.status(resolved.statusCode).json(resolved.payload);
+    }
+
+    /**
+     * SECURITY BOUNDARY (Admin Authorization)
+     * ------------------------------------------------------------------
+     * Frontend route guards are UX helpers only.
+     * Backend admin middleware is the authoritative gate for all
+     * admin-prefixed routes and must remain strict and normalized.
+     */
+    if (!resolved.userContext.isAdmin) {
+      return res.status(403).json({ success: false, error: "Forbidden: Admin access required" });
+    }
+
+    (req as any).userContext = resolved.userContext;
+    next();
+  };
+
+  const fastAccessAuthMiddleware = async (
+    req: express.Request,
+    res: express.Response,
+    next: express.NextFunction
+  ) => {
+    const resolved = await resolveRequestUserContext(req, 'fast_access');
+    if (!resolved.ok) {
+      return res.status(resolved.statusCode).json(resolved.payload);
+    }
+
+    (req as any).userContext = resolved.userContext;
+    next();
+  };
+
+  app.post('/api/auth/session/bootstrap', async (req, res) => {
     const idToken = req.headers.authorization?.split('Bearer ')[1];
-    if (!idToken) return res.status(401).json({ success: false, error: "Unauthorized: Missing token" });
-    
+    if (!idToken) {
+      return res.status(401).json({ success: false, error: 'Unauthorized: Missing token' });
+    }
+
     try {
       const decodedToken = await admin.auth().verifyIdToken(idToken);
       const userDoc = await db.collection(COLLECTIONS.USERS).doc(decodedToken.uid).get();
       const userData = (userDoc.data() || {}) as Record<string, unknown>;
       const roleContext = resolveRoleContext(decodedToken, userData);
+      const expectedAuthType = normalizeExpectedAuthType(req.body?.expectedAuthType);
+      const sessionBootstrap = buildSessionBootstrapInput({
+        decodedToken,
+        userData,
+        roleContext,
+        expectedAuthType,
+        source: normalizeAuthSessionBootstrapSource(req.body?.source, 'restore'),
+      });
 
-      /**
-       * SECURITY BOUNDARY (Admin Authorization)
-       * ------------------------------------------------------------------
-       * Frontend route guards are UX helpers only.
-       * Backend admin middleware is the authoritative gate for all
-       * admin-prefixed routes and must remain strict and normalized.
-       */
-      if (!roleContext.isAdmin) {
-        return res.status(403).json({ success: false, error: "Forbidden: Admin access required" });
-      }
+      const session = await authSessionService.bootstrapSession(sessionBootstrap.input);
 
-      if (['suspended', 'blocked', 'rejected'].includes(roleContext.normalizedStatus)) {
-        return res.status(403).json({ success: false, error: "Forbidden: Admin account is not active" });
-      }
-      
-      (req as any).userContext = {
-        uid: decodedToken.uid,
-        email: decodedToken.email,
-        role: roleContext.role,
-        adminLevel: roleContext.adminLevel,
-        isAdmin: true
-      };
-      next();
+      return res.json({
+        success: true,
+        data: {
+          session,
+        },
+      });
     } catch (error) {
-      res.status(401).json({ success: false, error: "Unauthorized: Invalid token" });
+      return res.status(401).json({
+        success: false,
+        error: 'Failed to bootstrap session.',
+        details: normalizeError(error),
+      });
     }
-  };
+  });
+
+  app.post('/api/auth/session/refresh', async (req, res) => {
+    const idToken = req.headers.authorization?.split('Bearer ')[1];
+    if (!idToken) {
+      return res.status(401).json({ success: false, error: 'Unauthorized: Missing token' });
+    }
+
+    try {
+      const decodedToken = await admin.auth().verifyIdToken(idToken);
+      const userDoc = await db.collection(COLLECTIONS.USERS).doc(decodedToken.uid).get();
+      const userData = (userDoc.data() || {}) as Record<string, unknown>;
+      const roleContext = resolveRoleContext(decodedToken, userData);
+      const expectedAuthType = normalizeExpectedAuthType(req.body?.expectedAuthType);
+      const sessionBootstrap = buildSessionBootstrapInput({
+        decodedToken,
+        userData,
+        roleContext,
+        expectedAuthType,
+        source: normalizeAuthSessionBootstrapSource(req.body?.source, 'refresh'),
+      });
+
+      const session = await authSessionService.refreshSession(sessionBootstrap.input);
+
+      return res.json({
+        success: true,
+        data: {
+          session,
+        },
+      });
+    } catch (error) {
+      return res.status(401).json({
+        success: false,
+        error: 'Failed to refresh session.',
+        details: normalizeError(error),
+      });
+    }
+  });
+
+  app.post('/api/auth/session/logout', async (req, res) => {
+    const idToken = req.headers.authorization?.split('Bearer ')[1];
+    if (!idToken) {
+      return res.status(401).json({ success: false, error: 'Unauthorized: Missing token' });
+    }
+
+    try {
+      const decodedToken = await admin.auth().verifyIdToken(idToken);
+      const userDoc = await db.collection(COLLECTIONS.USERS).doc(decodedToken.uid).get();
+      const userData = (userDoc.data() || {}) as Record<string, unknown>;
+      const roleContext = resolveRoleContext(decodedToken, userData);
+      const sessionBootstrap = buildSessionBootstrapInput({
+        decodedToken,
+        userData,
+        roleContext,
+        expectedAuthType: normalizeExpectedAuthType(req.body?.authType),
+        source: 'logout',
+      });
+
+      const session = await authSessionService.logoutSession({
+        ...sessionBootstrap.input,
+        source: 'logout',
+        reason: normalizeOptionalString(req.body?.reason) || 'logout',
+      });
+
+      return res.json({
+        success: true,
+        data: {
+          session,
+        },
+      });
+    } catch (error) {
+      return res.status(401).json({
+        success: false,
+        error: 'Failed to invalidate session.',
+        details: normalizeError(error),
+      });
+    }
+  });
 
   app.get('/api/assets/:assetId/content', authMiddleware, assetAccessRateLimiter, async (req, res) => {
     try {
@@ -3361,6 +3665,34 @@ const logAdminUserAction = async (
     };
   };
 
+  const loadFastAccessIdentityByPhone = async (phoneNumber: string) => {
+    const [userQuerySnap, tempQuerySnap] = await Promise.all([
+      db.collection(COLLECTIONS.USERS).where('phoneNumber', '==', phoneNumber).limit(4).get(),
+      db.collection(COLLECTIONS.FACULTY_FAST_ACCESS_ACCOUNTS).where('phoneNumber', '==', phoneNumber).limit(4).get(),
+    ]);
+
+    const userDocs = userQuerySnap.docs.map((docSnap) => ({
+      id: docSnap.id,
+      data: (docSnap.data() || {}) as Record<string, unknown>,
+    }));
+    const tempDocs = tempQuerySnap.docs.map((docSnap) => ({
+      id: docSnap.id,
+      data: (docSnap.data() || {}) as Record<string, unknown>,
+    }));
+
+    const temporaryUserDoc = userDocs.find((entry) => isFacultyFastAccessScopedUser(entry.data));
+    const fullUserDoc = userDocs.find((entry) => !isFacultyFastAccessScopedUser(entry.data));
+    const tempDoc = tempDocs.find((entry) => {
+      const rawStatus = String(entry.data.status || '').trim().toLowerCase();
+      return rawStatus !== 'deleted' && rawStatus !== 'converted';
+    });
+
+    return {
+      fastAccessExists: Boolean(temporaryUserDoc) || Boolean(tempDoc),
+      fullAccountExists: Boolean(fullUserDoc),
+    };
+  };
+
   const assertFastAccessAccountIsUsable = (userData: Record<string, unknown> | null) => {
     const existingStatus = normalizeUserStatusLabel(userData?.status);
     const existingStatusContext = (userData?.statusContext || {}) as Record<string, unknown>;
@@ -3381,11 +3713,13 @@ const logAdminUserAction = async (
     phoneNumber,
     expiresAtIso,
     fastAccessCredits,
+    profileCompletionStage,
   }: {
     userId: string;
     phoneNumber: string;
     expiresAtIso: string;
     fastAccessCredits: number;
+    profileCompletionStage: 'pending_profile_completion' | 'temporary_onboarding_complete' | 'converted_to_full_account';
   }) => {
     const customToken = await admin.auth().createCustomToken(userId, {
       role: 'User',
@@ -3404,9 +3738,67 @@ const logAdminUserAction = async (
         temporaryAccessType: FACULTY_FAST_ACCESS_TYPE,
         temporaryAccessExpiresAt: expiresAtIso,
         fastAccessCredits,
+        profileCompletionStage,
       },
     };
   };
+
+  app.post('/api/auth/fast-access/faculty-science/preflight', async (req, res) => {
+    /**
+     * PREFLIGHT NOTE
+     * ------------------------------------------------------------------
+     * This is a UX-only lookup used to keep the phone-first entry flow smart
+     * without weakening authentication. OTP is still required for both new and
+     * existing phones before any session is granted.
+     */
+    const clientIp = getRequestIp(req);
+    const ipKey = `ip:${clientIp}`;
+    const ipLimit = checkFastAccessThrottle(ipKey);
+    if (!ipLimit.allowed) {
+      return res.status(429).json({
+        success: false,
+        error: ipLimit.message,
+        retryAfterSeconds: ipLimit.retryAfterSeconds,
+      });
+    }
+
+    try {
+      const phoneNumber = normalizeE164Phone(req.body?.phoneNumber);
+      const phoneKey = `phone:${phoneNumber}`;
+      const phoneLimit = checkFastAccessThrottle(phoneKey);
+
+      if (!phoneLimit.allowed) {
+        return res.status(429).json({
+          success: false,
+          error: phoneLimit.message,
+          retryAfterSeconds: phoneLimit.retryAfterSeconds,
+        });
+      }
+
+      const identity = await loadFastAccessIdentityByPhone(phoneNumber);
+      const accountState = identity.fullAccountExists
+        ? 'full_account_exists'
+        : identity.fastAccessExists
+          ? 'fast_access_exists'
+          : 'eligible_for_registration';
+
+      recordFastAccessSuccess(ipKey);
+      recordFastAccessSuccess(phoneKey);
+
+      res.json({
+        success: true,
+        data: {
+          phoneNumber,
+          nextStep: 'otp_verification',
+          accountState,
+        },
+      });
+    } catch (error: any) {
+      const message = normalizeOptionalString(error?.message) || 'Failed to prepare fast-access verification';
+      recordFastAccessFailure(ipKey);
+      res.status(400).json({ success: false, error: message });
+    }
+  });
 
   app.post('/api/auth/fast-access/faculty-science/status', async (req, res) => {
     /**
@@ -3437,14 +3829,6 @@ const logAdminUserAction = async (
 
     try {
       const idToken = normalizeRequiredString(req.body?.idToken, 'idToken');
-      const intent = normalizeRequiredString(req.body?.intent, 'intent').toLowerCase();
-      if (intent !== 'login' && intent !== 'register') {
-        return res.status(400).json({
-          success: false,
-          error: 'Fast-access intent must be login or register.',
-        });
-      }
-
       const { userId, phoneNumber } = await verifyFastAccessPhoneToken(idToken);
       const userKey = `uid:${userId}`;
       const phoneKey = `phone:${phoneNumber}`;
@@ -3493,7 +3877,6 @@ const logAdminUserAction = async (
         success: true,
         data: {
           phoneNumber,
-          intent,
           accountState: responseState.accountState,
           recommendedNextStep: responseState.recommendedNextStep,
           existingAccount: identity.fastAccessExists
@@ -3583,9 +3966,27 @@ const logAdminUserAction = async (
       const initialFastAccessCredits = normalizeFastAccessCredits(
         identity.userData?.fastAccessCredits ?? identity.tempData?.fastAccessCredits
       );
+      const profileCompletionStage = resolveFastAccessProfileCompletionStage(identity.userData, identity.tempData);
       const tempProfile =
         typeof identity.tempData?.profile === 'object' && identity.tempData?.profile
           ? identity.tempData.profile as Record<string, unknown>
+          : {};
+      const existingMetadata =
+        typeof identity.userData?.fastAccessMetadata === 'object' && identity.userData?.fastAccessMetadata
+          ? identity.userData.fastAccessMetadata as Record<string, unknown>
+          : {};
+      const completedProfileMetadata =
+        profileCompletionStage === 'temporary_onboarding_complete'
+          ? {
+              profileCompletedAt:
+                normalizeOptionalString(existingMetadata.profileCompletedAt) ||
+                normalizeOptionalString(identity.tempData?.profileCompletedAt) ||
+                nowIso,
+              creditsGrantedAt:
+                normalizeOptionalString(existingMetadata.creditsGrantedAt) ||
+                normalizeOptionalString(identity.tempData?.creditsGrantedAt) ||
+                nowIso,
+            }
           : {};
       const mergedProviders = Array.from(new Set([
         'phone-fast-access',
@@ -3634,6 +4035,8 @@ const logAdminUserAction = async (
               normalizeOptionalString((identity.userData?.fastAccessMetadata as Record<string, unknown> | undefined)?.onboardingMethod) ||
               normalizeOptionalString(identity.tempData?.authProvider) ||
               'firebase_phone_otp',
+            profileCompletionStage,
+            ...completedProfileMetadata,
           },
           statusMessage: admin.firestore.FieldValue.delete(),
           statusContext: {
@@ -3678,7 +4081,8 @@ const logAdminUserAction = async (
           fastAccessCredits: initialFastAccessCredits,
           updatedAt: nowIso,
           expiresAt: expiresAtIso,
-          profileCompletionStage: 'temporary_onboarding_complete',
+          profileCompletionStage,
+          ...completedProfileMetadata,
           onboardingPath:
             normalizeOptionalString(identity.tempData?.onboardingPath) ||
             'self_service_phone_registration',
@@ -3693,6 +4097,7 @@ const logAdminUserAction = async (
           phoneNumber,
           expiresAtIso,
           fastAccessCredits: initialFastAccessCredits,
+          profileCompletionStage,
         }),
       });
 
@@ -3736,7 +4141,6 @@ const logAdminUserAction = async (
 
     try {
       const idToken = normalizeRequiredString(req.body?.idToken, 'idToken');
-      const profile = validateFastAccessProfile(req.body?.profile);
       const { userId, phoneNumber } = await verifyFastAccessPhoneToken(idToken);
       const userKey = `uid:${userId}`;
       const phoneKey = `phone:${phoneNumber}`;
@@ -3776,7 +4180,8 @@ const logAdminUserAction = async (
 
       const nowIso = new Date().toISOString();
       const expiresAtIso = new Date(Date.now() + FACULTY_FAST_ACCESS_EXPIRY_HOURS * 60 * 60 * 1000).toISOString();
-      let resolvedFastAccessCredits = FACULTY_FAST_ACCESS_INITIAL_CREDITS;
+      let resolvedFastAccessCredits = 0;
+      const profileCompletionStage = 'pending_profile_completion' as const;
 
       await db.runTransaction(async (tx) => {
         const existingUserSnap = await tx.get(identity.userRef);
@@ -3785,9 +4190,7 @@ const logAdminUserAction = async (
         normalizeAuthProviderList(existingUserData?.authProviders).forEach((provider) => providerSet.add(provider));
         const mergedProviders = Array.from(providerSet);
 
-        const initialFastAccessCredits = typeof existingUserData?.fastAccessCredits === 'number'
-          ? normalizeFastAccessCredits(existingUserData.fastAccessCredits)
-          : FACULTY_FAST_ACCESS_INITIAL_CREDITS;
+        const initialFastAccessCredits = 0;
         resolvedFastAccessCredits = initialFastAccessCredits;
 
         const baseUserPayload: Record<string, unknown> = {
@@ -3801,7 +4204,9 @@ const logAdminUserAction = async (
           usernameLower: typeof existingUserData?.usernameLower === 'string' && String(existingUserData.usernameLower).trim()
             ? existingUserData.usernameLower
             : `temp_science_${userId.slice(0, 8)}`.toLowerCase(),
-          name: profile.fullName || (typeof existingUserData?.name === 'string' && String(existingUserData.name).trim()) || 'CU Science Student',
+          name:
+            (typeof existingUserData?.name === 'string' && String(existingUserData.name).trim()) ||
+            'CU Science Student',
           phoneNumber,
           role: 'User',
           plan: 'free',
@@ -3850,9 +4255,15 @@ const logAdminUserAction = async (
           totalAIRequests: typeof existingUserData?.totalAIRequests === 'number' ? existingUserData.totalAIRequests : 0,
           totalQuizzes: typeof existingUserData?.totalQuizzes === 'number' ? existingUserData.totalQuizzes : 0,
           institution: 'Cairo University',
-          department: profile.department || 'Faculty of Science',
-          academicYear: profile.academicYear,
-          universityCode: profile.universityCode,
+          department:
+            (typeof existingUserData?.department === 'string' && String(existingUserData.department).trim()) ||
+            'Faculty of Science',
+          academicYear:
+            (typeof existingUserData?.academicYear === 'string' && String(existingUserData.academicYear).trim()) ||
+            '',
+          universityCode:
+            (typeof existingUserData?.universityCode === 'string' && String(existingUserData.universityCode).trim()) ||
+            '',
           country: typeof existingUserData?.country === 'string' && existingUserData.country ? existingUserData.country : 'Egypt',
           nationality: typeof existingUserData?.nationality === 'string' && existingUserData.nationality ? existingUserData.nationality : 'Egyptian',
           isTemporaryAccess: true,
@@ -3863,6 +4274,7 @@ const logAdminUserAction = async (
             institution: 'Cairo University',
             faculty: 'Faculty of Science',
             onboardingMethod: 'firebase_phone_otp',
+            profileCompletionStage,
           },
           statusMessage: admin.firestore.FieldValue.delete(),
           statusContext: {
@@ -3890,13 +4302,17 @@ const logAdminUserAction = async (
           temporaryAccessType: FACULTY_FAST_ACCESS_TYPE,
           institution: 'Cairo University',
           faculty: 'Faculty of Science',
-          profile,
+          profile: {
+            department:
+              (typeof existingUserData?.department === 'string' && String(existingUserData.department).trim()) ||
+              'Faculty of Science',
+          },
           authProvider: 'firebase_phone_otp',
           otpVerifiedAt: nowIso,
           fastAccessCredits: initialFastAccessCredits,
           updatedAt: nowIso,
           expiresAt: expiresAtIso,
-          profileCompletionStage: 'temporary_onboarding_complete',
+          profileCompletionStage,
           onboardingPath: 'self_service_phone_registration',
         };
 
@@ -3912,6 +4328,7 @@ const logAdminUserAction = async (
           phoneNumber,
           expiresAtIso,
           fastAccessCredits: resolvedFastAccessCredits,
+          profileCompletionStage,
         }),
       });
 
@@ -3929,7 +4346,116 @@ const logAdminUserAction = async (
     }
   });
 
-  app.post('/api/auth/fast-access/faculty-science/convert', authMiddleware, async (req, res) => {
+  app.post('/api/auth/fast-access/faculty-science/complete-profile', fastAccessAuthMiddleware, async (req, res) => {
+    /**
+     * COMPLETION NOTE
+     * ------------------------------------------------------------------
+     * Profile completion is the activation checkpoint for new temporary users.
+     * The first 3 Faculty fast-access credits are granted here, not at raw OTP
+     * verification time, so the phone-first flow can stay minimal while the
+     * backend keeps quota authority.
+     */
+    try {
+      const userContext = (req as any).userContext;
+      const userId = normalizeRequiredString(userContext?.uid, 'uid');
+      const profile = validateFastAccessProfile(req.body?.profile);
+      const userRef = db.collection(COLLECTIONS.USERS).doc(userId);
+      const tempAccessRef = db.collection(COLLECTIONS.FACULTY_FAST_ACCESS_ACCOUNTS).doc(userId);
+      const [userSnap, tempSnap] = await Promise.all([userRef.get(), tempAccessRef.get()]);
+
+      if (!userSnap.exists) {
+        return res.status(404).json({ success: false, error: 'User profile not found.' });
+      }
+
+      const userData = (userSnap.data() || {}) as Record<string, unknown>;
+      const tempData = tempSnap.exists ? (tempSnap.data() || {}) as Record<string, unknown> : null;
+
+      if (!isFacultyFastAccessScopedUser(userData)) {
+        return res.status(409).json({
+          success: false,
+          error: 'Only temporary Faculty fast-access accounts can complete this activation step.',
+        });
+      }
+
+      const currentStage = resolveFastAccessProfileCompletionStage(userData, tempData);
+      const nowIso = new Date().toISOString();
+      const existingMetadata =
+        typeof userData.fastAccessMetadata === 'object' && userData.fastAccessMetadata
+          ? userData.fastAccessMetadata as Record<string, unknown>
+          : {};
+      const currentCredits = normalizeFastAccessCredits(userData.fastAccessCredits ?? tempData?.fastAccessCredits);
+      const shouldGrantInitialCredits = currentStage !== 'temporary_onboarding_complete';
+      const nextCredits = shouldGrantInitialCredits
+        ? FACULTY_FAST_ACCESS_INITIAL_CREDITS
+        : currentCredits;
+      const grantedCredits = shouldGrantInitialCredits ? FACULTY_FAST_ACCESS_INITIAL_CREDITS : 0;
+      const completedProfileMetadata = {
+        profileCompletionStage: 'temporary_onboarding_complete' as const,
+        profileCompletedAt:
+          normalizeOptionalString(existingMetadata.profileCompletedAt) ||
+          normalizeOptionalString(tempData?.profileCompletedAt) ||
+          nowIso,
+        creditsGrantedAt:
+          normalizeOptionalString(existingMetadata.creditsGrantedAt) ||
+          normalizeOptionalString(tempData?.creditsGrantedAt) ||
+          nowIso,
+      };
+
+      await db.runTransaction(async (tx) => {
+        tx.set(userRef, {
+          name: profile.fullName,
+          universityCode: profile.universityCode,
+          department: profile.department,
+          academicYear: profile.academicYear,
+          fastAccessCredits: nextCredits,
+          fastAccessCreditsUpdatedAt: nowIso,
+          fastAccessCreditPolicy: {
+            initialCredits: FACULTY_FAST_ACCESS_INITIAL_CREDITS,
+            deductionPerSuccess: FACULTY_FAST_ACCESS_CREDIT_COST_PER_SUCCESS,
+          },
+          fastAccessMetadata: {
+            institution: 'Cairo University',
+            faculty: 'Faculty of Science',
+            onboardingMethod:
+              normalizeOptionalString(existingMetadata.onboardingMethod) ||
+              normalizeOptionalString(tempData?.authProvider) ||
+              'firebase_phone_otp',
+            ...completedProfileMetadata,
+          },
+          updatedAt: nowIso,
+        }, { merge: true });
+
+        tx.set(tempAccessRef, {
+          userId,
+          phoneNumber:
+            normalizeOptionalString(userData.phoneNumber) ||
+            normalizeOptionalString(tempData?.phoneNumber) ||
+            '',
+          profile,
+          fastAccessCredits: nextCredits,
+          profileCompletionStage: 'temporary_onboarding_complete',
+          profileCompletedAt: completedProfileMetadata.profileCompletedAt,
+          creditsGrantedAt: completedProfileMetadata.creditsGrantedAt,
+          updatedAt: nowIso,
+        }, { merge: true });
+      });
+
+      res.json({
+        success: true,
+        data: {
+          completed: true,
+          fastAccessCredits: nextCredits,
+          grantedCredits,
+          profileCompletionStage: 'temporary_onboarding_complete',
+        },
+      });
+    } catch (error: any) {
+      const message = normalizeOptionalString(error?.message) || 'Failed to complete fast-access profile';
+      res.status(400).json({ success: false, error: message });
+    }
+  });
+
+  app.post('/api/auth/fast-access/faculty-science/convert', fastAccessAuthMiddleware, async (req, res) => {
     /**
      * ARCHITECTURE SAFETY NOTE
      * ------------------------------------------------------------------
@@ -6884,6 +7410,33 @@ const logAdminUserAction = async (
       );
 
       if (isTemporaryFastAccessUser) {
+        const fastAccessProfileCompletionStage = resolveFastAccessProfileCompletionStage(
+          effectiveUserData,
+          null
+        );
+        if (fastAccessProfileCompletionStage === 'pending_profile_completion') {
+          const structuredError = {
+            category: 'permission',
+            code: 'FAST_ACCESS_PROFILE_INCOMPLETE',
+            message: 'Temporary fast-access profile completion is still required',
+            userMessage: 'Complete your Fast Access profile to activate your 3 credits.',
+            stage: 'request_validation',
+            traceId,
+            retryable: false,
+            details: {
+              operationId: normalizedOperationId,
+              profileCompletionStage: fastAccessProfileCompletionStage,
+            },
+          };
+
+          return res.status(403).json({
+            success: false,
+            error: structuredError.userMessage,
+            errorInfo: structuredError,
+            traceId,
+          });
+        }
+
         const isAllowedTool = FACULTY_FAST_ACCESS_ALLOWED_TOOL_IDS.includes(normalizedToolId as any);
         if (!isAllowedTool) {
           const structuredError = {

@@ -52,6 +52,26 @@ export function isFacultyFastAccessUser(user: User | null | undefined): boolean 
   );
 }
 
+export function isFastAccessProfileCompletionPending(user: User | null | undefined): boolean {
+  if (!isFacultyFastAccessUser(user)) {
+    return false;
+  }
+
+  const profileCompletionStage = String(user?.fastAccessMetadata?.profileCompletionStage || '').trim().toLowerCase();
+  if (profileCompletionStage === 'pending_profile_completion') {
+    return true;
+  }
+
+  if (profileCompletionStage === 'temporary_onboarding_complete') {
+    return false;
+  }
+
+  // Legacy-safe fallback for older documents that predate explicit stage fields.
+  const normalizedName = String(user?.name || '').trim();
+  const normalizedUniversityCode = String(user?.universityCode || '').trim();
+  return !normalizedUniversityCode || !normalizedName || normalizedName === 'CU Science Student';
+}
+
 export function isFastAccessPathAllowed(pathname: string): boolean {
   return FACULTY_FAST_ACCESS_ALLOWED_PATHS.some((allowedPath) => {
     if (allowedPath === '/') {

@@ -14,12 +14,14 @@ const userActor: DocumentActorContext = {
   actorId: 'user-1',
   actorRole: 'User',
   scope: 'user',
+  authType: 'normal',
 };
 
 const adminActor: DocumentActorContext = {
   actorId: 'user-1',
   actorRole: 'Admin',
   scope: 'admin',
+  authType: 'admin',
   adminLevel: 'primary',
 };
 
@@ -45,8 +47,8 @@ test('runtime keys stay actor-scoped even for identical ids', () => {
   const adminKeys = buildDocumentRuntimeKeySet(adminActor, 'doc-123');
 
   assert.notEqual(userKeys.activeDocument, adminKeys.activeDocument);
-  assert.match(userKeys.document, /:user:user-1:extract:doc-123$/);
-  assert.match(adminKeys.document, /:admin:user-1:extract:doc-123$/);
+  assert.match(userKeys.document, /:user:normal:user-1:extract_doc-123$/);
+  assert.match(adminKeys.document, /:admin:admin:user-1:extract_doc-123$/);
 });
 
 test('workspace paths stay actor-scoped even for identical workflow and document ids', () => {

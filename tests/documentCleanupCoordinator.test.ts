@@ -9,6 +9,7 @@ const actor: DocumentActorContext = {
   actorId: 'user-cleanup',
   actorRole: 'User',
   scope: 'user',
+  authType: 'normal',
 };
 
 test('cancelOperation requests cancellation, marks the document cancelled, and clears active runtime state', async () => {

@@ -3,7 +3,11 @@ import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { isPrimaryAdminUser } from '../auth/accessControl';
 import { FastAccessLockedState } from './FastAccessLockedState';
-import { isFacultyFastAccessUser, isFastAccessPathAllowed } from '../constants/fastAccessPolicy';
+import {
+  isFacultyFastAccessUser,
+  isFastAccessPathAllowed,
+  isFastAccessProfileCompletionPending,
+} from '../constants/fastAccessPolicy';
 import { AppStartupRecovery } from './AppStartupRecovery';
 
 const FAST_ACCESS_ENTITLEMENT_PATH_TO_PAGE_ID: Record<string, string> = {
@@ -34,6 +38,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
     isAuthenticated,
     isAuthReady,
     isAdmin,
+    authMode,
     authBootstrapIssue,
     retryAuthBootstrap,
     clearStalledAuthSession,
@@ -76,11 +81,11 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  if (adminOnly && !isAdmin) {
+  if (adminOnly && (!isAdmin || authMode !== 'admin')) {
     return <Navigate to="/" replace />;
   }
 
-  if (primaryAdminOnly && !isPrimaryAdmin) {
+  if (primaryAdminOnly && (!isPrimaryAdmin || authMode !== 'admin')) {
     return <Navigate to="/" replace />;
   }
 
@@ -135,6 +140,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
    */
   if (
     isFacultyFastAccessUser(user) &&
+    !isFastAccessProfileCompletionPending(user) &&
     (user?.fastAccessCredits ?? 0) <= 0 &&
     location.pathname !== '/account'
   ) {

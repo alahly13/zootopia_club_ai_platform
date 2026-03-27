@@ -52,7 +52,7 @@ const StudyTools: React.FC = () => {
     documentStatus,
     documentPreparationError,
   } = useDocument();
-  const { logActivity, checkLimit, incrementUsage, deductCredits, user, handleError, models, notify, getModelConfig } = useAuth();
+  const { logActivity, checkLimit, incrementUsage, deductCredits, user, sessionScopeKey, handleError, models, notify, getModelConfig } = useAuth();
   const { t } = useLanguage();
   const [activeTool, setActiveTool] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
@@ -117,11 +117,12 @@ const StudyTools: React.FC = () => {
       user,
       fallbackModelId: selectedModelId,
       persistedModelId: readPersistedToolModelSelection({
+        actorScopeKey: sessionScopeKey || 'anonymous',
         toolId,
         selectionScopeId: `study:${toolId}`,
       }),
     });
-  }, [models, selectedModelId, user]);
+  }, [models, selectedModelId, sessionScopeKey, user]);
 
   const tools = [
     { id: 'summary', label: t('aiSummary'), icon: FileText, description: t('aiSummaryDesc') },

@@ -28,7 +28,11 @@ import { useNotifications } from '../notifications/NotificationContext';
 import { cn } from '../utils';
 import { cleanupExpiredResultsForUser } from '../services/resultService';
 import { cleanupExpiredGeneratedAssetsForUser } from '../services/generatedAssetService';
-import { FACULTY_FAST_ACCESS_CONVERSION_PROMPT, isFacultyFastAccessUser } from '../constants/fastAccessPolicy';
+import {
+  FACULTY_FAST_ACCESS_CONVERSION_PROMPT,
+  isFacultyFastAccessUser,
+  isFastAccessProfileCompletionPending,
+} from '../constants/fastAccessPolicy';
 import { logger } from '../utils/logger';
 import {
   hasWelcomePopupBeenHandledInThisSession,
@@ -222,6 +226,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
   const location = useLocation();
   const { activeFlowId, cancelFlow, requestFlow } = usePopupOrchestrator();
   const isFastAccessUser = isFacultyFastAccessUser(user);
+  const isFastAccessProfilePending = isFastAccessProfileCompletionPending(user);
   const remainingFastAccessCredits = user?.fastAccessCredits ?? 0;
   const welcomeContextKey = useMemo(() => resolveWelcomeContextKey(user), [user]);
 
@@ -509,7 +514,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
         <div className="flex-1 flex flex-col overflow-hidden">
           {/* Low credits banner */}
           {user && (
-            (isFastAccessUser && remainingFastAccessCredits <= 0) ||
+            (isFastAccessUser && !isFastAccessProfilePending && remainingFastAccessCredits <= 0) ||
             (!isFastAccessUser && user.credits <= 0 && !isAdmin && user.plan !== 'pro')
           ) && (
             <div className="bg-amber-500/10 border-b border-amber-500/20 px-4 sm:px-6 py-3.5 sm:py-4 flex flex-col sm:flex-row gap-3 sm:gap-4 sm:items-center sm:justify-between animate-in slide-in-from-top duration-500 shrink-0">

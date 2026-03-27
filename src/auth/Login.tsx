@@ -9,7 +9,7 @@ import { StatusCard } from '../components/status/StatusCard';
 import { motion, AnimatePresence } from 'motion/react';
 import { NATIONALITIES } from '../constants/nationalities';
 import { COUNTRIES } from '../constants/countries';
-import { Shield, GraduationCap, Lock, User as UserIcon, LogIn, Mail, Phone, Calendar, BookOpen, Building, Globe, Sparkles, ArrowRight, Eye, EyeOff, Loader2, KeyRound, ArrowLeft, CheckCircle2, XCircle, ChevronRight, ChevronLeft, Moon, Sun, Languages, Heart, Atom } from 'lucide-react';
+import { Shield, GraduationCap, Lock, User as UserIcon, LogIn, Mail, Phone, Calendar, BookOpen, Building, Sparkles, ArrowRight, Eye, EyeOff, Loader2, KeyRound, ArrowLeft, CheckCircle2, XCircle, ChevronRight, ChevronLeft, Moon, Sun, Heart, Atom } from 'lucide-react';
 import Flag from 'react-world-flags';
 import { COPYRIGHT, cn } from '../utils';
 import { LoginLogo } from '../components/LoginLogo';
@@ -22,46 +22,24 @@ import ScienceMouse from '../components/ScienceMouse';
 import ScienceBackground from '../components/ScienceBackground';
 import {
   buildFastAccessPhone,
+  preflightFacultyScienceFastAccess,
   checkFacultyScienceFastAccessStatus,
   loginFacultyScienceFastAccess,
   registerFacultyScienceFastAccess,
 } from '../services/fastAccessService';
 import { AuthSecondaryActionsPanel } from './AuthSecondaryActionsPanel';
+import {
+  clearStoredAuthSessionMode,
+  writeStoredAuthSessionMode,
+} from './session/storage';
+import { withTimeout } from '../utils/async';
+import { logger } from '../utils/logger';
+import type { FacultyScienceFastAccessAccountState } from '../types/api';
 
-const FAST_ACCESS_BATCH_YEAR_MIN = 2013;
-const FAST_ACCESS_BATCH_YEAR_MAX = 2031;
-const FAST_ACCESS_ALLOWED_BATCH_PREFIXES = new Set(
-  Array.from(
-    { length: FAST_ACCESS_BATCH_YEAR_MAX - FAST_ACCESS_BATCH_YEAR_MIN + 1 },
-    (_, index) => String(FAST_ACCESS_BATCH_YEAR_MIN + index).slice(-2)
-  )
-);
-
-function deriveFastAccessAcademicYearFromCode(universityCode: string): string | null {
-  const normalizedCode = universityCode.replace(/\D/g, '');
-  if (!/^\d{7}$/.test(normalizedCode)) {
-    return null;
-  }
-
-  const prefix = normalizedCode.slice(0, 2);
-  if (!FAST_ACCESS_ALLOWED_BATCH_PREFIXES.has(prefix)) {
-    return null;
-  }
-
-  const batchYear = Number.parseInt(`20${prefix}`, 10);
-  if (
-    !Number.isInteger(batchYear) ||
-    batchYear < FAST_ACCESS_BATCH_YEAR_MIN ||
-    batchYear > FAST_ACCESS_BATCH_YEAR_MAX
-  ) {
-    return null;
-  }
-
-  return String(batchYear);
-}
+const ADMIN_LOGIN_TIMEOUT_MS = 15_000;
 
 const Login: React.FC = () => {
-  const { adminLogin, loginWithIdentifier, register, isAuthReady, notify, checkUsernameAvailability, forgotPassword } = useAuth();
+  const { adminLogin, login, loginWithIdentifier, register, isAuthReady, notify, checkUsernameAvailability, forgotPassword } = useAuth();
   const { language, toggleLanguage, t } = useLanguage();
   const { isDarkMode, toggleTheme } = useTheme();
   const [mode, setMode] = useState<'login' | 'register' | 'admin' | 'forgot-password' | 'science-fast-access'>('login');
@@ -118,26 +96,22 @@ const Login: React.FC = () => {
     phoneCountryCode: '+20',
     phoneNumber: '',
     otpCode: '',
-    fullName: '',
-    universityCode: '',
   });
-  const [fastAccessIntent, setFastAccessIntent] = useState<'login' | 'register' | null>(null);
   const [otpConfirmation, setOtpConfirmation] = useState<ConfirmationResult | null>(null);
   const [isOtpSent, setIsOtpSent] = useState(false);
-  const [fastAccessStep, setFastAccessStep] = useState<'choice' | 'phone' | 'profile'>('choice');
-  const [verifiedFastAccessToken, setVerifiedFastAccessToken] = useState('');
+  const [fastAccessStep, setFastAccessStep] = useState<'phone' | 'otp'>('phone');
+  const [fastAccessAccountState, setFastAccessAccountState] =
+    useState<FacultyScienceFastAccessAccountState | null>(null);
   const [fastAccessNotice, setFastAccessNotice] = useState<{
     tone: 'info' | 'warning' | 'success';
     title: string;
     message: string;
     actionLabel?: string;
-    action?: 'login_now' | 'continue_registration' | 'full_login';
+    action?: 'full_login';
   } | null>(null);
   const [fastAccessValidation, setFastAccessValidation] = useState<{
     phoneNumber?: string;
     otpCode?: string;
-    fullName?: string;
-    universityCode?: string;
   }>({});
   const recaptchaVerifierRef = React.useRef<RecaptchaVerifier | null>(null);
   const fastAccessAuthRef = React.useRef(createFastAccessAuth());
@@ -145,53 +119,11 @@ const Login: React.FC = () => {
   /**
    * FLOW-SAFETY NOTE
    * ------------------------------------------------------------------
-   * 1. The user explicitly chooses login or registration first.
-   * 2. OTP verifies phone ownership.
-   * 3. The backend authoritatively decides whether that phone may log in,
-   *    needs registration, or belongs to a full account.
-   * 4. Registration collects only name + university code after OTP.
+   * 1. The user enters only the phone number first.
+   * 2. Backend preflight decides the safe path in the background.
+   * 3. OTP is still required for both existing and new numbers.
+   * 4. Post-login profile completion stays inside the authenticated shell.
    */
-  const validateFastAccessStudentStep = () => {
-    const nextErrors: {
-      fullName?: string;
-      universityCode?: string;
-    } = {};
-
-    const normalizedName = fastAccessData.fullName.trim();
-    const normalizedCode = fastAccessData.universityCode.replace(/\D/g, '');
-    const derivedAcademicYear = deriveFastAccessAcademicYearFromCode(normalizedCode);
-
-    if (!normalizedName) {
-      nextErrors.fullName = t('fastAccess.errorNameRequired');
-    }
-
-    if (!normalizedCode) {
-      nextErrors.universityCode = t('fastAccess.errorCodeRequired');
-    } else if (!/^\d{7}$/.test(normalizedCode)) {
-      nextErrors.universityCode = t('fastAccess.errorCodeSevenDigits');
-    } else if (!derivedAcademicYear) {
-      nextErrors.universityCode = t('fastAccess.errorYearRange', {
-        min: FAST_ACCESS_BATCH_YEAR_MIN,
-        max: FAST_ACCESS_BATCH_YEAR_MAX,
-      });
-    }
-
-    setFastAccessValidation((prev) => ({
-      ...prev,
-      fullName: nextErrors.fullName,
-      universityCode: nextErrors.universityCode,
-    }));
-
-    return {
-      isValid: Object.keys(nextErrors).length === 0,
-      profile: {
-        fullName: normalizedName,
-        universityCode: normalizedCode,
-        department: 'Faculty of Science',
-        academicYear: derivedAcademicYear || undefined,
-      },
-    };
-  };
 
   const fastAccessCopy = {
     entryTitle: isArabic ? 'اختر طريقة الدخول السريع' : 'Choose your Fast Access path',
@@ -248,6 +180,32 @@ const Login: React.FC = () => {
     switchToLoginMessage: isArabic
       ? 'لن ننشئ حسابًا مكررًا. يمكنك المتابعة مباشرة إلى تسجيل الدخول بهذا الرقم المتحقق.'
       : 'We will not create a duplicate temporary account. Continue directly to phone login with this verified number.',
+    phoneStageSubmit: isArabic ? 'متابعة' : 'Continue',
+    otpStageTitle: isArabic ? 'أكد رقم هاتفك' : 'Confirm your phone number',
+    otpStageHintExisting: isArabic
+      ? 'أدخل رمز التحقق الذي أرسلناه إلى هذا الرقم للمتابعة.'
+      : 'Enter the verification code we sent to this number to continue.',
+    otpStageHintNew: isArabic
+      ? 'أكد هذا الرقم لبدء الدخول السريع، ثم أكمل اسمك وكودك الجامعي داخل المنصة.'
+      : 'Confirm this number to start Fast Access, then finish your name and university code inside the platform.',
+    changePhone: isArabic ? 'تغيير الرقم' : 'Change phone',
+    verifyAndContinue: isArabic ? 'تحقق واستمر' : 'Verify and continue',
+    statusPreparingOtp: isArabic ? 'جارٍ تجهيز التحقق عبر الهاتف...' : 'Preparing phone verification...',
+    toastPhoneConfirmed: isArabic ? 'تم تأكيد رقم الهاتف.' : 'Phone number confirmed.',
+  } as const;
+
+  const fastAccessScreenCopy = {
+    phoneTitle: isArabic ? 'تابع برقم هاتفك' : 'Continue with your phone',
+    phoneHint: isArabic
+      ? 'أدخل رقم هاتفك للمتابعة عبر Faculty Fast Access.'
+      : 'Enter your phone number to continue with Faculty Fast Access.',
+    otpTitle: isArabic ? 'أكد رقم هاتفك' : 'Confirm your phone number',
+    otpHintExisting: isArabic
+      ? 'أدخل رمز التحقق الذي أرسلناه إلى هذا الرقم لإكمال تسجيل الدخول.'
+      : 'Enter the code we sent to finish signing in.',
+    otpHintNew: isArabic
+      ? 'أدخل رمز التحقق الذي أرسلناه لبدء Faculty Fast Access.'
+      : 'Enter the code we sent to start Fast Access.',
   } as const;
 
   const isEnglishOnly = (text: string) => /^[\x00-\xFF]*$/.test(text);
@@ -294,9 +252,12 @@ const Login: React.FC = () => {
   const handleGoogleLogin = async () => {
     setStatus('processing', 'Signing in with Google...');
     try {
-      await signInWithPopup(auth, googleProvider);
+      writeStoredAuthSessionMode('normal');
+      const credential = await signInWithPopup(auth, googleProvider);
+      await login(credential.user);
       setStatus('success', 'Signed in successfully');
     } catch (err: any) {
+      clearStoredAuthSessionMode();
       setError(err, handleGoogleLogin);
     }
   };
@@ -390,15 +351,35 @@ const Login: React.FC = () => {
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setStatus('processing', 'Authenticating admin...');
+
+    let settled = false;
     try {
-      const success = await adminLogin(adminUsername, adminPassword);
+      const success = await withTimeout(
+        adminLogin(adminUsername, adminPassword),
+        ADMIN_LOGIN_TIMEOUT_MS,
+        'Admin authentication timed out while waiting for verification. Please retry.'
+      );
       if (success) {
+        settled = true;
         setStatus('success', 'Admin authenticated');
       } else {
-        throw new Error('Invalid admin credentials');
+        throw new Error('Admin authentication failed. Please verify your credentials and admin access.');
       }
     } catch (err: any) {
+      logger.error('Admin login flow failed', {
+        area: 'auth',
+        event: 'admin-login-submit-failed',
+        identifierKind: adminUsername.includes('@') ? 'email' : 'username',
+        error: err,
+      });
       setError(err, () => handleAdminLogin(e));
+    } finally {
+      logger.info('Admin login flow settled', {
+        area: 'auth',
+        event: 'admin-login-submit-settled',
+        identifierKind: adminUsername.includes('@') ? 'email' : 'username',
+        success: settled,
+      });
     }
   };
 
@@ -407,14 +388,11 @@ const Login: React.FC = () => {
       phoneCountryCode: '+20',
       phoneNumber: '',
       otpCode: '',
-      fullName: '',
-      universityCode: '',
     });
-    setFastAccessIntent(null);
     setOtpConfirmation(null);
     setIsOtpSent(false);
-    setFastAccessStep('choice');
-    setVerifiedFastAccessToken('');
+    setFastAccessStep('phone');
+    setFastAccessAccountState(null);
     setFastAccessNotice(null);
     setFastAccessValidation({});
     if (recaptchaVerifierRef.current) {
@@ -457,55 +435,8 @@ const Login: React.FC = () => {
     return verifier;
   };
 
-  const openFastAccessPath = (intent: 'login' | 'register') => {
-    setFastAccessIntent(intent);
-    setFastAccessStep('phone');
-    setFastAccessNotice(null);
-    setVerifiedFastAccessToken('');
-    setFastAccessValidation({});
-    setFastAccessData((prev) => ({
-      ...prev,
-      otpCode: '',
-      fullName: '',
-      universityCode: '',
-    }));
-    reset();
-  };
-
-  const completeFastAccessLogin = async (idToken: string) => {
-    setFastAccessNotice(null);
-    setStatus('processing', fastAccessCopy.statusLoggingIn);
-    const verification = await loginFacultyScienceFastAccess(idToken);
-    await signInWithCustomToken(auth, verification.customToken);
-    setStatus('success', fastAccessCopy.toastLoginGranted);
-    notify.success(fastAccessCopy.toastLoginGranted);
-  };
-
   const handleFastAccessNoticeAction = async () => {
     if (!fastAccessNotice?.action) {
-      return;
-    }
-
-    if (fastAccessNotice.action === 'login_now') {
-      if (!verifiedFastAccessToken) {
-        notify.error(t('fastAccess.errorSessionExpired'));
-        setFastAccessStep('phone');
-        return;
-      }
-
-      try {
-        await completeFastAccessLogin(verifiedFastAccessToken);
-      } catch (err: any) {
-        setError(err, handleFastAccessNoticeAction);
-      }
-      return;
-    }
-
-    if (fastAccessNotice.action === 'continue_registration') {
-      setFastAccessIntent('register');
-      setFastAccessStep('profile');
-      setFastAccessNotice(null);
-      setStatus('success', fastAccessCopy.statusRegistrationReady);
       return;
     }
 
@@ -514,16 +445,30 @@ const Login: React.FC = () => {
     reset();
   };
 
-  const handleSendFastAccessOtp = async () => {
-    if (!fastAccessIntent) {
-      setFastAccessNotice({
-        tone: 'warning',
-        title: fastAccessCopy.entryTitle,
-        message: fastAccessCopy.entryHint,
-      });
-      return;
-    }
+  const resolveFastAccessVerification = React.useCallback(
+    async (idToken: string) => {
+      if (fastAccessAccountState === 'fast_access_exists') {
+        return loginFacultyScienceFastAccess(idToken);
+      }
 
+      if (fastAccessAccountState === 'eligible_for_registration') {
+        return registerFacultyScienceFastAccess({ idToken });
+      }
+
+      const phoneStatus = await checkFacultyScienceFastAccessStatus({ idToken });
+
+      if (phoneStatus.accountState === 'full_account_exists') {
+        throw new Error(fastAccessCopy.useFullLoginMessage);
+      }
+
+      return phoneStatus.accountState === 'fast_access_exists'
+        ? loginFacultyScienceFastAccess(idToken)
+        : registerFacultyScienceFastAccess({ idToken });
+    },
+    [fastAccessAccountState, fastAccessCopy.useFullLoginMessage]
+  );
+
+  const handleSendFastAccessOtp = async () => {
     try {
       const fullPhoneNumber = buildFastAccessPhone(
         fastAccessData.phoneCountryCode,
@@ -531,9 +476,26 @@ const Login: React.FC = () => {
       );
 
       setFastAccessNotice(null);
-      setVerifiedFastAccessToken('');
       setFastAccessValidation((prev) => ({ ...prev, phoneNumber: undefined }));
-      setStatus('processing', t('fastAccess.statusSendingOtp'));
+      setStatus('processing', fastAccessCopy.statusPreparingOtp);
+
+      const preflight = await preflightFacultyScienceFastAccess({
+        phoneNumber: fullPhoneNumber,
+      });
+
+      setFastAccessAccountState(preflight.accountState);
+      if (preflight.accountState === 'full_account_exists') {
+        setFastAccessNotice({
+          tone: 'warning',
+          title: fastAccessCopy.useFullLoginTitle,
+          message: fastAccessCopy.useFullLoginMessage,
+          action: 'full_login',
+          actionLabel: fastAccessCopy.backToFullLogin,
+        });
+        setStatus('success', fastAccessCopy.useFullLoginMessage);
+        return;
+      }
+
       const verifier = ensureRecaptcha();
       const confirmation = await signInWithPhoneNumber(
         fastAccessAuthRef.current,
@@ -543,6 +505,11 @@ const Login: React.FC = () => {
 
       setOtpConfirmation(confirmation);
       setIsOtpSent(true);
+      setFastAccessStep('otp');
+      setFastAccessData((prev) => ({
+        ...prev,
+        otpCode: '',
+      }));
       setStatus('success', t('fastAccess.statusOtpSent'));
       notify.success(t('fastAccess.toastOtpSent'));
     } catch (err: any) {
@@ -574,100 +541,29 @@ const Login: React.FC = () => {
       setStatus('processing', t('fastAccess.statusVerifyingOtp'));
       const credentialResult = await otpConfirmation.confirm(otpCode);
       const idToken = await credentialResult.user.getIdToken(true);
-      setVerifiedFastAccessToken(idToken);
       await fastAccessAuthRef.current.signOut();
+      setStatus('processing', fastAccessCopy.statusLoggingIn);
 
-      if (!fastAccessIntent) {
-        throw new Error('Choose a Fast Access path before verifying OTP.');
-      }
-
-      setStatus('processing', fastAccessCopy.statusCheckingPath);
-      const phoneStatus = await checkFacultyScienceFastAccessStatus({
-        idToken,
-        intent: fastAccessIntent,
-      });
-
-      if (phoneStatus.accountState === 'full_account_exists') {
-        setStatus('success', fastAccessCopy.statusUseFullLogin);
-        setFastAccessNotice({
-          tone: 'warning',
-          title: fastAccessCopy.useFullLoginTitle,
-          message: fastAccessCopy.useFullLoginMessage,
-          action: 'full_login',
-          actionLabel: fastAccessCopy.backToFullLogin,
-        });
-        notify.warning(fastAccessCopy.statusUseFullLogin);
-        return;
-      }
-
-      if (fastAccessIntent === 'login') {
-        if (phoneStatus.accountState === 'fast_access_exists') {
-          await completeFastAccessLogin(idToken);
-          return;
-        }
-
-        setFastAccessIntent('register');
-        setFastAccessStep('profile');
-        setStatus('success', fastAccessCopy.statusPhoneNotFound);
-        setFastAccessNotice({
-          tone: 'info',
-          title: fastAccessCopy.switchToRegisterTitle,
-          message: fastAccessCopy.switchToRegisterMessage,
-        });
-        notify.warning(fastAccessCopy.toastSwitchToRegister);
-        return;
-      }
-
-      if (phoneStatus.accountState === 'fast_access_exists') {
-        setStatus('success', fastAccessCopy.statusPhoneRegistered);
-        setFastAccessNotice({
-          tone: 'warning',
-          title: fastAccessCopy.switchToLoginTitle,
-          message: fastAccessCopy.switchToLoginMessage,
-          action: 'login_now',
-          actionLabel: fastAccessCopy.loginNow,
-        });
-        notify.warning(fastAccessCopy.toastAlreadyRegistered);
-        return;
-      }
-
-      setFastAccessStep('profile');
-      setStatus('success', fastAccessCopy.statusRegistrationReady);
-      notify.success(fastAccessCopy.toastRegistrationReady);
-    } catch (err: any) {
-      setError(err, handleVerifyFastAccessOtp);
-    }
-  };
-
-  const handleCompleteFastAccessProfile = async () => {
-    if (!verifiedFastAccessToken) {
-      setFastAccessValidation((prev) => ({ ...prev, otpCode: t('fastAccess.errorSessionExpired') }));
-      notify.error(t('fastAccess.errorSessionExpired'));
-      setFastAccessStep('phone');
-      return;
-    }
-
-    const validation = validateFastAccessStudentStep();
-    if (!validation.isValid) {
-      notify.error(t('fastAccess.errorFixFields'));
-      return;
-    }
-
-    try {
-      setStatus('processing', t('fastAccess.statusFinalizing'));
-      const verification = await registerFacultyScienceFastAccess({
-        idToken: verifiedFastAccessToken,
-        profile: validation.profile,
-      });
+      const verification = await resolveFastAccessVerification(idToken);
 
       // Main app session remains on the primary auth instance.
       // The OTP auth instance is only used to prove phone possession.
+      writeStoredAuthSessionMode('fast_access');
       await signInWithCustomToken(auth, verification.customToken);
 
-      setStatus('success', t('fastAccess.statusGranted'));
-      notify.success(t('fastAccess.toastGranted'));
+      const isProfilePending =
+        verification.account.profileCompletionStage === 'pending_profile_completion';
+      const successMessage = isProfilePending
+        ? fastAccessCopy.toastPhoneConfirmed
+        : t('fastAccess.toastGranted');
+
+      setStatus('success', successMessage);
+      notify.success(successMessage);
     } catch (err: any) {
-      setError(err, handleCompleteFastAccessProfile);
+      if (!auth.currentUser) {
+        clearStoredAuthSessionMode();
+      }
+      setError(err, handleVerifyFastAccessOtp);
     }
   };
 
@@ -720,83 +616,23 @@ const Login: React.FC = () => {
     );
   };
 
-  const renderFastAccessChoiceStep = () => (
-    <motion.div
-      key="fast-access-choice"
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -8 }}
-      className="space-y-4"
-    >
-      <div>
-        <h3 className="text-sm font-black tracking-wide text-zinc-800 dark:text-zinc-100">{fastAccessCopy.entryTitle}</h3>
-        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{fastAccessCopy.entryHint}</p>
-      </div>
-
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <button
-          type="button"
-          onClick={() => openFastAccessPath('login')}
-          className="rounded-[1.6rem] border border-zinc-200/80 bg-white/90 p-4 text-start transition hover:border-emerald-300 hover:bg-emerald-50/70 dark:border-zinc-700/60 dark:bg-zinc-900/45 dark:hover:border-emerald-600/60 dark:hover:bg-emerald-900/20"
-        >
-          <div className="flex items-start gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-emerald-200/40 bg-emerald-100/80 text-emerald-700 dark:border-emerald-700/50 dark:bg-emerald-900/40 dark:text-emerald-300">
-              <LogIn size={18} />
-            </div>
-            <div>
-              <p className="text-sm font-black text-zinc-900 dark:text-zinc-100">{fastAccessCopy.loginTitle}</p>
-              <p className="mt-1 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">{fastAccessCopy.loginHint}</p>
-            </div>
-          </div>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => openFastAccessPath('register')}
-          className="rounded-[1.6rem] border border-zinc-200/80 bg-white/90 p-4 text-start transition hover:border-emerald-300 hover:bg-emerald-50/70 dark:border-zinc-700/60 dark:bg-zinc-900/45 dark:hover:border-emerald-600/60 dark:hover:bg-emerald-900/20"
-        >
-          <div className="flex items-start gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-emerald-200/40 bg-emerald-100/80 text-emerald-700 dark:border-emerald-700/50 dark:bg-emerald-900/40 dark:text-emerald-300">
-              <Sparkles size={18} />
-            </div>
-            <div>
-              <p className="text-sm font-black text-zinc-900 dark:text-zinc-100">{fastAccessCopy.registerTitle}</p>
-              <p className="mt-1 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">{fastAccessCopy.registerHint}</p>
-            </div>
-          </div>
-        </button>
-      </div>
-
-      {renderFastAccessNotice()}
-    </motion.div>
-  );
-
   const renderFastAccessPhoneStep = () => (
     <motion.div
       key="fast-access-phone"
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -8 }}
-      className="space-y-3.5"
+      className="space-y-5"
     >
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="space-y-2">
         <div>
-          <h3 className="text-sm font-black tracking-wide text-zinc-800 dark:text-zinc-100">{fastAccessCopy.phoneStageTitle}</h3>
-          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{fastAccessCopy.phoneStageHint}</p>
+          <h3 className="text-2xl font-black tracking-tight text-zinc-900 dark:text-zinc-100">
+            {fastAccessScreenCopy.phoneTitle}
+          </h3>
+          <p className="mt-2 text-sm leading-relaxed text-zinc-500 dark:text-zinc-400">
+            {fastAccessScreenCopy.phoneHint}
+          </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setFastAccessStep('choice')}
-          className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-white/80 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.16em] text-zinc-600 transition hover:border-emerald-300 hover:text-emerald-700 dark:border-zinc-700 dark:bg-zinc-900/60 dark:text-zinc-300"
-        >
-          <ArrowLeft size={14} className={cn(language === 'ar' && 'rotate-180')} />
-          {fastAccessCopy.pathSwitcher}
-        </button>
-      </div>
-
-      <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200/70 bg-emerald-50 px-3 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-emerald-700 dark:border-emerald-700/60 dark:bg-emerald-900/20 dark:text-emerald-300">
-        {fastAccessIntent === 'login' ? <LogIn size={12} /> : <Sparkles size={12} />}
-        {fastAccessIntent === 'login' ? fastAccessCopy.loginTitle : fastAccessCopy.registerTitle}
       </div>
 
       {renderFastAccessNotice()}
@@ -806,7 +642,11 @@ const Login: React.FC = () => {
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-[8rem_1fr]">
           <CountrySelect
             value={fastAccessData.phoneCountryCode}
-            onChange={(val) => setFastAccessData(prev => ({ ...prev, phoneCountryCode: val }))}
+            onChange={(val) => {
+              setFastAccessData(prev => ({ ...prev, phoneCountryCode: val }));
+              setFastAccessAccountState(null);
+              setFastAccessNotice(null);
+            }}
             countries={COUNTRIES}
             type="phone"
           />
@@ -818,15 +658,62 @@ const Login: React.FC = () => {
               onChange={(e) => {
                 setFastAccessData(prev => ({ ...prev, phoneNumber: e.target.value.replace(/\D/g, '') }));
                 setFastAccessValidation(prev => ({ ...prev, phoneNumber: undefined }));
+                setFastAccessAccountState(null);
+                setFastAccessNotice(null);
               }}
               className="w-full rounded-2xl border-2 border-zinc-100 bg-white py-3.5 ps-12 pe-4 text-sm font-medium text-zinc-900 transition-all focus:outline-none focus:border-emerald-500 dark:border-zinc-700/50 dark:bg-zinc-800/60 dark:text-zinc-100"
               placeholder={t('fastAccess.phonePlaceholder')}
+              autoComplete="tel-national"
+              enterKeyHint="go"
               required
             />
           </div>
         </div>
         {renderFastAccessValidationMessage(fastAccessValidation.phoneNumber)}
       </div>
+
+      <div className="pt-1">
+        <button
+          type="button"
+          onClick={handleSendFastAccessOtp}
+          disabled={isLoading}
+          className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3.5 font-bold text-white shadow-lg shadow-emerald-900/20 transition-all hover:bg-emerald-500 active:scale-[0.98] disabled:opacity-50"
+        >
+          {isLoading ? <Loader2 className="animate-spin" size={18} /> : <Phone size={18} />}
+          {fastAccessCopy.phoneStageSubmit}
+        </button>
+      </div>
+
+      <div id="faculty-science-recaptcha" className="min-h-1" />
+    </motion.div>
+  );
+
+  const renderFastAccessOtpStep = () => (
+    <motion.div
+      key="fast-access-otp"
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
+      className="space-y-5"
+    >
+      <div className="space-y-2">
+        <div>
+          <h3 className="text-2xl font-black tracking-tight text-zinc-900 dark:text-zinc-100">
+            {fastAccessScreenCopy.otpTitle}
+          </h3>
+          <p className="mt-2 text-sm leading-relaxed text-zinc-500 dark:text-zinc-400">
+            {fastAccessAccountState === 'fast_access_exists'
+              ? fastAccessScreenCopy.otpHintExisting
+              : fastAccessScreenCopy.otpHintNew}
+          </p>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-zinc-200/80 bg-zinc-50/80 px-4 py-3 text-sm font-semibold text-zinc-700 dark:border-zinc-700/70 dark:bg-zinc-900/50 dark:text-zinc-200">
+        {fastAccessData.phoneCountryCode} {fastAccessData.phoneNumber}
+      </div>
+
+      {renderFastAccessNotice()}
 
       <div className="space-y-1.5">
         <label className={cn('text-[11px] font-bold text-zinc-500 dark:text-zinc-400 ms-1', !isArabic && 'uppercase tracking-[0.14em]')}>{t('fastAccess.otpLabel')}</label>
@@ -842,23 +729,15 @@ const Login: React.FC = () => {
             className="w-full rounded-2xl border-2 border-zinc-100 bg-white py-3.5 ps-12 pe-4 text-sm font-medium tracking-[0.3em] text-zinc-900 transition-all focus:outline-none focus:border-emerald-500 dark:border-zinc-700/50 dark:bg-zinc-800/60 dark:text-zinc-100"
             placeholder="000000"
             inputMode="numeric"
-            disabled={!isOtpSent}
+            autoComplete="one-time-code"
+            enterKeyHint="done"
           />
         </div>
         <p className="text-[10px] text-zinc-500 dark:text-zinc-400 ms-1">{t('fastAccess.otpHint')}</p>
         {renderFastAccessValidationMessage(fastAccessValidation.otpCode)}
       </div>
 
-      <div className="grid grid-cols-1 gap-2 pt-1 sm:grid-cols-2">
-        <button
-          type="button"
-          onClick={handleSendFastAccessOtp}
-          disabled={isLoading}
-          className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3.5 font-bold text-white shadow-lg shadow-emerald-900/20 transition-all hover:bg-emerald-500 active:scale-[0.98] disabled:opacity-50"
-        >
-          {isLoading ? <Loader2 className="animate-spin" size={18} /> : <Phone size={18} />}
-          {isOtpSent ? t('fastAccess.resendOtp') : t('fastAccess.sendOtp')}
-        </button>
+      <div className="pt-1">
         <button
           type="button"
           onClick={handleVerifyFastAccessOtp}
@@ -866,113 +745,45 @@ const Login: React.FC = () => {
           className="flex w-full items-center justify-center gap-2 rounded-2xl bg-zinc-900 py-3.5 font-bold text-white transition-all hover:bg-zinc-800 active:scale-[0.98] disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
         >
           {isLoading ? <Loader2 className="animate-spin" size={18} /> : <CheckCircle2 size={18} />}
-          {t('fastAccess.verifyOtp')}
+          {fastAccessCopy.verifyAndContinue}
         </button>
       </div>
 
-      <div id="faculty-science-recaptcha" className="min-h-1" />
-    </motion.div>
-  );
-
-  const renderFastAccessProfileStep = () => (
-    <motion.div
-      key="fast-access-profile"
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -8 }}
-      className="space-y-3.5"
-    >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-black tracking-wide text-zinc-800 dark:text-zinc-100">{fastAccessCopy.profileStageTitle}</h3>
-          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{fastAccessCopy.profileStageHint}</p>
-          <p className="mt-1 text-[10px] text-zinc-500 dark:text-zinc-400">{t('fastAccess.requiredLegend')}</p>
-        </div>
+      <div className="flex items-center justify-between pt-1">
         <button
           type="button"
-          onClick={() => setFastAccessStep('choice')}
-          className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-white/80 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.16em] text-zinc-600 transition hover:border-emerald-300 hover:text-emerald-700 dark:border-zinc-700 dark:bg-zinc-900/60 dark:text-zinc-300"
+          onClick={() => {
+            setFastAccessStep('phone');
+            setIsOtpSent(false);
+            setOtpConfirmation(null);
+            setFastAccessAccountState(null);
+            setFastAccessNotice(null);
+            setFastAccessData((prev) => ({ ...prev, otpCode: '' }));
+            setFastAccessValidation((prev) => ({ ...prev, otpCode: undefined }));
+          }}
+          className="inline-flex items-center gap-2 text-xs font-bold text-zinc-500 transition-colors hover:text-emerald-600 dark:text-zinc-400 dark:hover:text-emerald-300"
         >
           <ArrowLeft size={14} className={cn(language === 'ar' && 'rotate-180')} />
-          {fastAccessCopy.backToChoice}
+          {fastAccessCopy.changePhone}
         </button>
-      </div>
-
-      {renderFastAccessNotice()}
-
-      <div className="space-y-1.5">
-        <label className={cn('text-[11px] font-bold text-zinc-500 dark:text-zinc-400 ms-1', !isArabic && 'uppercase tracking-[0.14em]')}>{t('fastAccess.fullNameLabel')}</label>
-        <div className="relative">
-          <UserIcon className="absolute start-4 top-1/2 -translate-y-1/2 text-zinc-400 dark:text-zinc-500" size={18} />
-          <input
-            type="text"
-            value={fastAccessData.fullName}
-            onChange={(e) => {
-              setFastAccessData(prev => ({ ...prev, fullName: e.target.value.slice(0, 120) }));
-              setFastAccessValidation(prev => ({ ...prev, fullName: undefined }));
-            }}
-            className="w-full rounded-2xl border-2 border-zinc-100 bg-white py-3.5 ps-12 pe-4 text-sm font-medium text-zinc-900 transition-all focus:outline-none focus:border-emerald-500 dark:border-zinc-700/50 dark:bg-zinc-800/60 dark:text-zinc-100"
-            placeholder={t('fastAccess.fullNamePlaceholder')}
-            required
-          />
-        </div>
-        <p className="text-[10px] text-zinc-500 dark:text-zinc-400 ms-1">{fastAccessCopy.nameFlexHint}</p>
-        {renderFastAccessValidationMessage(fastAccessValidation.fullName)}
-      </div>
-
-      <div className="space-y-1.5">
-        <label className={cn('text-[11px] font-bold text-zinc-500 dark:text-zinc-400 ms-1', !isArabic && 'uppercase tracking-[0.14em]')}>{t('fastAccess.studentCodeLabel')}</label>
-        <div className="relative">
-          <Building className="absolute start-4 top-1/2 -translate-y-1/2 text-zinc-400 dark:text-zinc-500" size={18} />
-          <input
-            type="text"
-            value={fastAccessData.universityCode}
-            onChange={(e) => {
-              setFastAccessData(prev => ({ ...prev, universityCode: e.target.value.replace(/\D/g, '').slice(0, 7) }));
-              setFastAccessValidation(prev => ({ ...prev, universityCode: undefined }));
-            }}
-            className="w-full rounded-2xl border-2 border-zinc-100 bg-white py-3.5 ps-12 pe-4 text-sm font-medium text-zinc-900 transition-all focus:outline-none focus:border-emerald-500 dark:border-zinc-700/50 dark:bg-zinc-800/60 dark:text-zinc-100"
-            placeholder={t('fastAccess.studentCodePlaceholder')}
-            inputMode="numeric"
-            required
-          />
-        </div>
-        <p className="text-[10px] text-zinc-500 dark:text-zinc-400 ms-1">{fastAccessCopy.codeRuleHint}</p>
-        {renderFastAccessValidationMessage(fastAccessValidation.universityCode)}
-      </div>
-
-      <div className="grid grid-cols-1 gap-2 pt-1 sm:grid-cols-2">
         <button
           type="button"
-          onClick={handleCompleteFastAccessProfile}
+          onClick={handleSendFastAccessOtp}
           disabled={isLoading}
-          className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3.5 font-bold text-white shadow-lg shadow-emerald-900/20 transition-all hover:bg-emerald-500 active:scale-[0.98] disabled:opacity-50"
+          className="inline-flex items-center gap-2 text-xs font-bold text-zinc-500 transition-colors hover:text-emerald-600 disabled:opacity-50 dark:text-zinc-400 dark:hover:text-emerald-300"
         >
-          {isLoading ? <Loader2 className="animate-spin" size={18} /> : <ArrowRight size={18} className={cn(language === 'ar' && 'rotate-180')} />}
-          {fastAccessCopy.continueRegistration}
-        </button>
-        <button
-          type="button"
-          onClick={() => setFastAccessStep('choice')}
-          className="flex w-full items-center justify-center gap-2 rounded-2xl bg-zinc-100 py-3.5 font-bold text-zinc-600 transition-all hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
-        >
-          <ArrowLeft size={18} className={cn(language === 'ar' && 'rotate-180')} />
-          {fastAccessCopy.backToChoice}
+          {t('fastAccess.resendOtp')}
         </button>
       </div>
     </motion.div>
   );
 
   const renderFastAccessStepContent = () => {
-    if (fastAccessStep === 'choice') {
-      return renderFastAccessChoiceStep();
+    if (fastAccessStep === 'otp') {
+      return renderFastAccessOtpStep();
     }
 
-    if (fastAccessStep === 'phone') {
-      return renderFastAccessPhoneStep();
-    }
-
-    return renderFastAccessProfileStep();
+    return renderFastAccessPhoneStep();
   };
 
   if (!isAuthReady) {
@@ -1190,7 +1001,14 @@ const Login: React.FC = () => {
                           transition={{ duration: 0.2 }}
                           className="group relative w-full overflow-hidden rounded-[1.75rem] border border-emerald-300/35 bg-[linear-gradient(135deg,rgba(16,185,129,0.18),rgba(2,6,23,0.22))] px-4 py-3 text-start backdrop-blur-md transition"
                         >
-                          <div className="absolute inset-y-0 end-0 w-24 bg-[radial-gradient(circle_at_center,_rgba(255,255,255,0.18),_transparent_70%)]" />
+                          <div
+                            aria-hidden="true"
+                            className="pointer-events-none absolute inset-y-0 end-4 flex items-center"
+                          >
+                            <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/12 bg-black/15 text-emerald-50/70 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
+                              <Building size={18} strokeWidth={1.9} />
+                            </div>
+                          </div>
                           <div className="relative flex items-center gap-3">
                             <motion.div
                               animate={{ y: [0, -4, 0], scale: [1, 1.03, 1] }}
@@ -1687,62 +1505,11 @@ const Login: React.FC = () => {
                             <p className="mt-2 max-w-xl text-sm leading-relaxed text-emerald-50/82">
                               {t('fastAccess.subtitle')}
                             </p>
-                            <p className="mt-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-100/70">
-                              {fastAccessAudience}
-                            </p>
                           </div>
                         </div>
                       </div>
 
-                      <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-3.5 dark:bg-amber-900/20 dark:border-amber-700/50">
-                        <p className="text-[11px] leading-relaxed font-semibold text-amber-800 dark:text-amber-200">
-                          {t('fastAccess.securityNote')}
-                        </p>
-                      </div>
-
-                      <div className="grid grid-cols-3 gap-2 rounded-2xl border border-zinc-200/80 bg-white/60 p-2 dark:border-zinc-700/60 dark:bg-zinc-800/40">
-                        <div
-                          className={cn(
-                            'rounded-xl border px-3 py-2 text-center transition',
-                            fastAccessStep === 'choice'
-                              ? 'border-emerald-600 bg-emerald-600 text-white shadow'
-                              : 'border-transparent bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400'
-                          )}
-                        >
-                          <p className={cn('text-[10px] font-black', !isArabic && 'uppercase tracking-wider')}>{t('step')} 1</p>
-                          <p className="mt-0.5 text-xs font-semibold">{fastAccessCopy.entryTitle}</p>
-                        </div>
-                        <div
-                          className={cn(
-                            'rounded-xl border px-3 py-2 text-center transition',
-                            fastAccessStep === 'phone'
-                              ? 'border-emerald-600 bg-emerald-600 text-white shadow'
-                              : 'border-transparent bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400'
-                          )}
-                        >
-                          <p className={cn('text-[10px] font-black', !isArabic && 'uppercase tracking-wider')}>{t('step')} 2</p>
-                          <p className="mt-0.5 text-xs font-semibold">{t('fastAccess.stepPhoneOtp')}</p>
-                        </div>
-                        <div
-                          className={cn(
-                            'rounded-xl border px-3 py-2 text-center transition',
-                            fastAccessStep === 'profile'
-                              ? 'border-emerald-600 bg-emerald-600 text-white shadow'
-                              : 'border-transparent bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400'
-                          )}
-                        >
-                          <p className={cn('text-[10px] font-black', !isArabic && 'uppercase tracking-wider')}>{t('step')} 3</p>
-                          <p className="mt-0.5 text-xs font-semibold">
-                            {fastAccessIntent === 'login'
-                              ? fastAccessCopy.loginTitle
-                              : fastAccessIntent === 'register'
-                                ? fastAccessCopy.registerTitle
-                                : fastAccessCopy.completeAccessLabel}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="min-h-[26rem] rounded-2xl border border-zinc-200/80 bg-zinc-50/65 p-4 dark:border-zinc-700/60 dark:bg-zinc-900/30 sm:p-5">
+                      <div className="min-h-[22rem] rounded-[1.85rem] border border-zinc-200/80 bg-zinc-50/65 p-5 dark:border-zinc-700/60 dark:bg-zinc-900/30 sm:p-6">
                         <AnimatePresence mode="wait">{renderFastAccessStepContent()}</AnimatePresence>
                       </div>
 

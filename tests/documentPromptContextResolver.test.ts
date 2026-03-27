@@ -12,6 +12,7 @@ const actor: DocumentActorContext = {
   actorId: 'user-ctx',
   actorRole: 'User',
   scope: 'user',
+  authType: 'normal',
 };
 
 const documentRecord: StoredDocumentRecord = {

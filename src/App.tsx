@@ -18,6 +18,7 @@ import { LanguageProvider } from './contexts/LanguageContext';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { MainLayout } from './components/MainLayout';
+import { AuthScopedDocumentBoundary } from './components/AuthScopedDocumentBoundary';
 import { Dashboard } from './features/assessment-tool';
 import { AppStartupRecovery } from './components/AppStartupRecovery';
 import Login from './auth/Login';
@@ -30,6 +31,7 @@ import { useLanguage } from './contexts/LanguageContext';
 import toast from 'react-hot-toast';
 import { logger } from './utils/logger';
 import { DocumentProvider } from './contexts/DocumentContext';
+import type { User } from './utils';
 import { SidebarProvider } from './components/SidebarContext';
 import { auth } from './firebase';
 import { getPaymentSessionId } from './utils/validators';
@@ -48,7 +50,8 @@ import {
   WELCOME_MANUAL_FLOW_ID,
   isWelcomeFlowId,
 } from './constants/popupFlows';
-import { isFacultyFastAccessUser } from './constants/fastAccessPolicy';
+import { isFacultyFastAccessUser, isFastAccessProfileCompletionPending } from './constants/fastAccessPolicy';
+import { FastAccessProfileCompletionModal } from './auth/FastAccessProfileCompletionModal';
 import {
   workspaceRoutes,
   PRIMARY_WORKSPACE_ROUTE_IDS,
@@ -195,8 +198,13 @@ function resolveRequestedPath(state: unknown): string | null {
   return `${pathname}${search}${hash}`;
 }
 
-function resolvePostAuthPath(isAdmin: boolean, state: unknown): string {
-  const requestedPath = resolveRequestedPath(state);
+function resolvePostAuthPath(input: {
+  isAdmin: boolean;
+  authMode: 'normal' | 'fast_access' | 'admin' | null;
+  user: User | null;
+  state: unknown;
+}): string {
+  const requestedPath = resolveRequestedPath(input.state);
 
   /**
    * ROUTING CONTRACT
@@ -206,12 +214,26 @@ function resolvePostAuthPath(isAdmin: boolean, state: unknown): string {
    * intact through dedicated admin routes and backend checks, not by forcing
    * `/admin` as the default landing page for every restored session.
    *
-   * Preserve explicit deep links when they are safe:
-   * - returning to a previously requested in-app route is allowed
-   * - admin-only routes still require admin identity
-   * - invalid or ambiguous login redirects collapse to the shared generator
-   */
+  * Preserve explicit deep links when they are safe:
+  * - returning to a previously requested in-app route is allowed
+  * - admin-only routes still require admin identity
+  * - invalid or ambiguous login redirects collapse to the shared generator
+  */
   if (!requestedPath || requestedPath === '/' || requestedPath === '/login') {
+    if (input.authMode === 'admin') {
+      return '/admin';
+    }
+
+    if (
+      isFacultyFastAccessUser(input.user) &&
+      (
+        isFastAccessProfileCompletionPending(input.user) ||
+        (input.user?.fastAccessCredits ?? 0) <= 0
+      )
+    ) {
+      return '/account';
+    }
+
     return SHARED_ASSESSMENT_ENTRY_PATH;
   }
 
@@ -219,7 +241,7 @@ function resolvePostAuthPath(isAdmin: boolean, state: unknown): string {
     (pathPrefix) => requestedPath === pathPrefix || requestedPath.startsWith(`${pathPrefix}/`)
   );
 
-  if (isAdminOnlyPath && !isAdmin) {
+  if (isAdminOnlyPath && !input.isAdmin) {
     return SHARED_ASSESSMENT_ENTRY_PATH;
   }
 
@@ -228,6 +250,8 @@ function resolvePostAuthPath(isAdmin: boolean, state: unknown): string {
 
 const LoginRouteGuard: React.FC = () => {
   const {
+    user,
+    authMode,
     isAuthenticated,
     isAuthReady,
     isAdmin,
@@ -268,7 +292,7 @@ const LoginRouteGuard: React.FC = () => {
   }
 
   if (isAuthenticated) {
-    return <Navigate to={resolvePostAuthPath(isAdmin, location.state)} replace />;
+    return <Navigate to={resolvePostAuthPath({ isAdmin, authMode, user, state: location.state })} replace />;
   }
 
   return <Login />;
@@ -296,8 +320,13 @@ const MainApp = () => {
 
   useRouteScrollReset();
 
+  const isPendingFastAccessProfileCompletion = isFastAccessProfileCompletionPending(user);
   const requiresAccountCompletion =
-    isFacultyFastAccessUser(user) && (user?.fastAccessCredits ?? 0) <= 0;
+    isFacultyFastAccessUser(user) &&
+    (
+      isPendingFastAccessProfileCompletion ||
+      (user?.fastAccessCredits ?? 0) <= 0
+    );
 
   usePopupBlocker({
     id: REQUIRED_ACCOUNT_COMPLETION_FLOW_ID,
@@ -420,6 +449,7 @@ const MainApp = () => {
       setIsSidebarCollapsed={setIsSidebarCollapsed}
     >
       <DocumentProvider>
+        <AuthScopedDocumentBoundary />
         <PaymentVerifier />
 
         <Routes>
@@ -716,6 +746,7 @@ const MainApp = () => {
           onSupport={() => navigate('/donation')}
           isSidebarCollapsed={isSidebarCollapsed}
         />
+        <FastAccessProfileCompletionModal />
       </DocumentProvider>
     </SidebarProvider>
   );
