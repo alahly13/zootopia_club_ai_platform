@@ -5705,3 +5705,45 @@ pm run build\ successfully.
   - Preserved the current Firebase Hosting + Cloud Run architecture, `server.ts` backend startup contract, Express routes, document runtime layout, Docker-based Cloud Run build path, and shared `/api/*` shape.
   - Did not redesign credential handling into a new subsystem; this is an additive env-first resolution path on top of the existing bundled-file fallback.
   - Later secure migration path: move Firebase Admin auth to the attached Cloud Run service account (Application Default Credentials) or Secret Manager / mounted secret file, then remove the bundled `serviceAccountKey.json` path and the related ignore-file exception comments.
+
+[2026-03-28]
+- Area: Admin Authentication / Login Error Isolation / Username Lookup
+- Files: /src/auth/Login.tsx, /src/auth/hooks/useAuthActions.ts, /src/utils/errorClassification.ts, /server.ts, /server/adminAccountDirectoryService.ts, /tests/adminAccountDirectoryService.test.ts, /tests/errorClassification.test.ts, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Fixed the incorrect AI-model-style error surface on the admin login screen, isolated admin sign-in from shared status-card leakage, and added a backend-authoritative admin username/email resolution path that preserves the existing Firebase password auth and session bootstrap flow.
+- Reason: Admin auth failures such as `No admin account was found with this email.` were being routed through the shared status classifier, where the broad `ai` substring rule matched `email` and rewrote the screen copy into `The AI model encountered an issue.`. Admin username entry also depended on the generic public username resolver plus frontend-only admin filtering, which was too weak for a clean admin login path.
+- Technical Details:
+  - Root-cause fix:
+    - Tightened `src/utils/errorClassification.ts` so auth-specific failures (`no account found`, `invalid credential`, `wrong password`, `session expired`, `invalid email`, etc.) classify as `auth_error` and keep their user-safe auth message.
+    - Replaced the broad model-error `input.includes('ai')` trigger with more precise AI/runtime matching (`model`, `gemini`, `qwen`, `llm`, `ai provider`, `provider runtime`, or whole-word `ai`) so normal auth words like `email` no longer get rewritten as AI failures.
+  - Admin login isolation:
+    - Updated `src/auth/Login.tsx` so admin mode no longer renders the shared generic `StatusCard` error surface used by other flows.
+    - Added admin-local error state (`Admin Sign-In Error`) with explicit reset/cleanup on mode changes and admin field edits, preventing stale shared tool/auth status state from polluting the admin panel entrance.
+    - Preserved the existing admin loading indicator and the existing `AuthContext` admin bootstrap/session establishment path.
+  - Backend-authoritative admin identifier lookup:
+    - Added `resolveAdminLoginIdentity` in `server/adminAccountDirectoryService.ts` to resolve admin login identifiers safely by:
+      - reserved admin email,
+      - exact `users.usernameLower`,
+      - reserved admin email local-part fallback when no Firestore username match exists.
+    - Added `GET /api/auth/admin/resolve-identifier` in `server.ts` with rate limiting, structured diagnostics, minimal response shape, and explicit handling for:
+      - invalid identifier,
+      - unauthorized admin identity,
+      - not found,
+      - ambiguous username,
+      - inactive admin states (`suspended`, `blocked`, `rejected`, or disabled auth user).
+    - Kept the response intentionally minimal: canonical admin email plus lookup metadata only; no extra admin directory data is exposed pre-login.
+  - Frontend admin auth wiring:
+    - Updated `src/auth/hooks/useAuthActions.ts` so `adminLogin` now resolves both username and email through the new backend route before calling `signInWithEmailAndPassword`.
+    - Preserved password verification through Firebase Auth and preserved the existing `writeStoredAuthSessionMode('admin')` + authoritative session bootstrap flow in `AuthContext`.
+    - Added concise safe diagnostics for admin lookup start/result/failure and normalized newer Firebase credential errors (`invalid-credential`, `invalid-login-credentials`, `too-many-requests`) into admin-auth-safe messages.
+  - Tests:
+    - Added focused classification coverage in `tests/errorClassification.test.ts`.
+    - Extended `tests/adminAccountDirectoryService.test.ts` to verify reserved-local-part admin resolution, ambiguous username rejection, and suspended admin rejection before password auth.
+- Risks / Dependencies:
+  - Admin username/email resolution still depends on the reserved admin identity list (`ADMIN_IDENTITIES`) as the authority boundary; this was preserved intentionally to avoid widening admin eligibility.
+  - Username login now depends on the new backend route `/api/auth/admin/resolve-identifier`; generic user login routes and existing non-admin username resolution remain unchanged.
+  - Full repository `tsc --noEmit` still reports unrelated pre-existing errors outside this scope (for example in `CommunicationCenter.tsx`, `App.tsx`, `emailDeliveryService.ts`, and `exporters.ts`); the touched auth/login files were fixed to avoid introducing additional TypeScript regressions.
+- Notes:
+  - Preserved the current Firebase Hosting + Cloud Run deployment model, Firebase Auth provider usage, backend session bootstrap route, `ProtectedRoute` admin gating, and `AuthContext` session architecture.
+  - Did not perform a broad auth rewrite, change route ownership, change admin claims flow, or alter post-login admin restore behavior.
+  - Validation completed with focused tests:
+    - `node_modules\.bin\tsx.cmd --test tests\adminAccountDirectoryService.test.ts tests\errorClassification.test.ts`

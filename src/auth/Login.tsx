@@ -38,6 +38,11 @@ import type { FacultyScienceFastAccessAccountState } from '../types/api';
 
 const ADMIN_LOGIN_TIMEOUT_MS = 15_000;
 
+type AdminAuthErrorState = {
+  message: string;
+  retryAction?: () => void;
+};
+
 const Login: React.FC = () => {
   const { adminLogin, login, loginWithIdentifier, register, isAuthReady, notify, checkUsernameAvailability, forgotPassword } = useAuth();
   const { language, toggleLanguage, t } = useLanguage();
@@ -49,6 +54,7 @@ const Login: React.FC = () => {
   const [isSecondaryActionsOpen, setIsSecondaryActionsOpen] = useState(false);
   const [usernameStatus, setUsernameStatus] = useState<'idle' | 'checking' | 'available' | 'taken' | 'error'>('idle');
   const [passwordStrength, setPasswordStrength] = useState<'weak' | 'medium' | 'strong'>('weak');
+  const [adminAuthError, setAdminAuthError] = useState<AdminAuthErrorState | null>(null);
   const isArabic = language === 'ar';
   const secondaryActionsTitle = isArabic ? 'خيارات دخول إضافية' : 'More access options';
   const secondaryActionsHint = isArabic
@@ -348,9 +354,11 @@ const Login: React.FC = () => {
     }, 500);
   };
 
-  const handleAdminLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
+  async function runAdminLogin() {
+    setAdminAuthError(null);
+    reset();
     setStatus('processing', 'Authenticating admin...');
+    const identifierKind = adminUsername.includes('@') ? 'email' : 'username';
 
     let settled = false;
     try {
@@ -369,18 +377,32 @@ const Login: React.FC = () => {
       logger.error('Admin login flow failed', {
         area: 'auth',
         event: 'admin-login-submit-failed',
-        identifierKind: adminUsername.includes('@') ? 'email' : 'username',
+        identifierKind,
         error: err,
       });
-      setError(err, () => handleAdminLogin(e));
+      reset();
+      setAdminAuthError({
+        message:
+          err instanceof Error
+            ? err.message
+            : 'Admin sign-in failed. Please verify your credentials and try again.',
+        retryAction: () => {
+          void runAdminLogin();
+        },
+      });
     } finally {
       logger.info('Admin login flow settled', {
         area: 'auth',
         event: 'admin-login-submit-settled',
-        identifierKind: adminUsername.includes('@') ? 'email' : 'username',
+        identifierKind,
         success: settled,
       });
     }
+  }
+
+  const handleAdminLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await runAdminLogin();
   };
 
   const resetFastAccessFlow = () => {
@@ -415,6 +437,20 @@ const Login: React.FC = () => {
       setIsSecondaryActionsOpen(false);
     }
   }, [isSecondaryActionsOpen, mode]);
+
+  React.useEffect(() => {
+    if (mode === 'admin') {
+      reset();
+    }
+    setAdminAuthError(null);
+  }, [mode, reset]);
+
+  React.useEffect(() => {
+    if (!adminAuthError) {
+      return;
+    }
+    setAdminAuthError(null);
+  }, [adminPassword, adminUsername]);
 
   const ensureRecaptcha = () => {
     if (recaptchaVerifierRef.current) {
@@ -915,7 +951,16 @@ const Login: React.FC = () => {
               </div>
 
               <div className="space-y-5">
-                {isError && (
+                {mode === 'admin' && adminAuthError && (
+                  <StatusCard
+                    status="recoverable_error"
+                    title="Admin Sign-In Error"
+                    message={adminAuthError.message}
+                    onRetry={adminAuthError.retryAction}
+                    onDismiss={() => setAdminAuthError(null)}
+                  />
+                )}
+                {mode !== 'admin' && isError && (
                   <StatusCard 
                     status={status}
                     title="Authentication Error"

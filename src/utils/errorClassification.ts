@@ -7,6 +7,11 @@ type ErrorRule = {
   result: ClassificationResult;
 };
 
+const containsWholeWord = (input: string, word: string) => {
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${escaped}\\b`).test(input);
+};
+
 const STRUCTURED_TO_STATUS_CATEGORY: Record<string, ErrorCategory> = {
   validation: 'validation_error',
   input: 'input_error',
@@ -56,6 +61,23 @@ const CLASSIFICATION_RULES: ErrorRule[] = [
     result: { category: 'permission_error', message: 'You do not have permission to perform this action.' },
   },
   {
+    match: input =>
+      input.includes('wrong password') ||
+      input.includes('incorrect password') ||
+      input.includes('invalid credential') ||
+      input.includes('invalid-login-credentials') ||
+      input.includes('user-not-found') ||
+      input.includes('no account found') ||
+      input.includes('no account was found') ||
+      input.includes('no admin account') ||
+      input.includes('invalid username') ||
+      input.includes('invalid email') ||
+      input.includes('not authorized for admin access') ||
+      input.includes('session expired') ||
+      input.includes('session invalidated'),
+    result: { category: 'auth_error', message: '' },
+  },
+  {
     match: input => input.includes('auth') || input.includes('login') || input.includes('unauthorized') || input.includes('unauthenticated'),
     result: { category: 'auth_error', message: 'Please log in to continue.' },
   },
@@ -76,7 +98,14 @@ const CLASSIFICATION_RULES: ErrorRule[] = [
     result: { category: 'parsing_error', message: 'The response format was invalid. Please retry.' },
   },
   {
-    match: input => input.includes('model') || input.includes('gemini') || input.includes('qwen') || input.includes('provider') || input.includes('ai'),
+    match: input =>
+      input.includes('model') ||
+      input.includes('gemini') ||
+      input.includes('qwen') ||
+      input.includes('llm') ||
+      input.includes('ai provider') ||
+      input.includes('provider runtime') ||
+      containsWholeWord(input, 'ai'),
     result: { category: 'model_error', message: 'The AI model encountered an issue. Please try again.' },
   },
   {
@@ -128,7 +157,14 @@ export const classifyError = (error: any): { category: ErrorCategory; message: s
 
   for (const rule of CLASSIFICATION_RULES) {
     if (rule.match(lower)) {
-      if ((rule.result.category === 'validation_error' || rule.result.category === 'parsing_error') && !rule.result.message) {
+      if (
+        (
+          rule.result.category === 'validation_error' ||
+          rule.result.category === 'parsing_error' ||
+          rule.result.category === 'auth_error'
+        ) &&
+        !rule.result.message
+      ) {
         return {
           category: rule.result.category,
           message: errorMessage,

@@ -155,6 +155,45 @@ export interface ListAdminAccountDirectoryOptions {
   includeDeleted?: boolean;
 }
 
+export interface ResolveAdminLoginIdentityOptions {
+  db: Firestore;
+  auth: admin.auth.Auth;
+  usersCollection: string;
+  identifier: string;
+  authorizedAdminEmails: string[];
+}
+
+export interface ResolvedAdminLoginIdentity {
+  email: string;
+  uid: string;
+  identifierType: 'email' | 'username';
+  resolutionSource: 'admin_email' | 'username_lower' | 'email_local_part';
+  authDisabled: boolean;
+  hasFirestoreProfile: boolean;
+  status?: string;
+  username?: string;
+}
+
+export type AdminLoginIdentityResolutionCode =
+  | 'INVALID_IDENTIFIER'
+  | 'ADMIN_ACCOUNT_NOT_FOUND'
+  | 'ADMIN_ACCOUNT_UNAUTHORIZED'
+  | 'ADMIN_ACCOUNT_AMBIGUOUS'
+  | 'ADMIN_ACCOUNT_INACTIVE';
+
+export type AdminLoginIdentityResolution =
+  | {
+      ok: true;
+      value: ResolvedAdminLoginIdentity;
+    }
+  | {
+      ok: false;
+      status: number;
+      code: AdminLoginIdentityResolutionCode;
+      error: string;
+      identifierType: 'email' | 'username';
+    };
+
 interface NormalizeAccountRecordInput {
   uid: string;
   authUser?: admin.auth.UserRecord | null;
@@ -172,6 +211,44 @@ const normalizeOptionalString = (value: unknown): string | undefined => {
   return normalized || undefined;
 };
 
+const normalizeIdentifierType = (identifier: string): 'email' | 'username' => {
+  return identifier.includes('@') ? 'email' : 'username';
+};
+
+const isValidEmailFormat = (value: string): boolean => {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+};
+
+const isInactiveAdminStatus = (status: string | undefined): boolean => {
+  return status === 'blocked' || status === 'suspended' || status === 'rejected';
+};
+
+const buildAdminEmailMap = (authorizedAdminEmails: string[]) => {
+  return new Map(
+    authorizedAdminEmails
+      .map((email) => normalizeOptionalString(email))
+      .filter((email): email is string => Boolean(email))
+      .map((email) => [email.toLowerCase(), email] as const)
+  );
+};
+
+const getEmailLocalPart = (email: string): string => {
+  return normalizeString(email.split('@')[0]).toLowerCase();
+};
+
+const toFailureResult = (
+  identifierType: 'email' | 'username',
+  status: number,
+  code: AdminLoginIdentityResolutionCode,
+  error: string
+): AdminLoginIdentityResolution => ({
+  ok: false,
+  status,
+  code,
+  error,
+  identifierType,
+});
+
 const normalizeStringArray = (value: unknown): string[] => {
   if (!Array.isArray(value)) return [];
   return value
@@ -188,19 +265,21 @@ const normalizeNonNegativeNumber = (value: unknown, fallback = 0): number => {
 const sanitizeClaims = (claims: Record<string, unknown> | undefined): Record<string, unknown> | undefined => {
   if (!claims) return undefined;
 
-  const safeEntries = Object.entries(claims).flatMap(([key, value]) => {
+  const safeEntries: Array<readonly [string, unknown]> = [];
+
+  for (const [key, value] of Object.entries(claims)) {
     if (value === null || value === undefined) {
-      return [];
+      continue;
     }
     if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-      return [[key, value] as const];
+      safeEntries.push([key, value] as const);
+      continue;
     }
     if (Array.isArray(value)) {
       const safeArray = value.filter((item) => ['string', 'number', 'boolean'].includes(typeof item)).slice(0, 20);
-      return [[key, safeArray] as const];
+      safeEntries.push([key, safeArray] as const);
     }
-    return [];
-  });
+  }
 
   return safeEntries.length > 0 ? Object.fromEntries(safeEntries) : undefined;
 };
@@ -597,6 +676,177 @@ const countFastAccessDeletionAudits = async (
   const snapshot = await db.collection(collectionName).get();
   return snapshot.size;
 };
+
+const loadFirestoreAdminCandidate = async (
+  db: Firestore,
+  usersCollection: string,
+  uid: string
+): Promise<Record<string, unknown> | null> => {
+  const snapshot = await db.collection(usersCollection).doc(uid).get();
+  return snapshot.exists ? ((snapshot.data() || {}) as Record<string, unknown>) : null;
+};
+
+async function resolveAdminLoginIdentityByEmail(
+  options: Omit<ResolveAdminLoginIdentityOptions, 'identifier'>
+    & {
+      identifierType: 'email' | 'username';
+      resolutionSource: ResolvedAdminLoginIdentity['resolutionSource'];
+      canonicalEmail: string;
+      username?: string;
+    }
+): Promise<AdminLoginIdentityResolution> {
+  const { auth, db, usersCollection, canonicalEmail, identifierType, resolutionSource, username } = options;
+
+  try {
+    const authUser = await auth.getUserByEmail(canonicalEmail);
+    const firestoreUser = await loadFirestoreAdminCandidate(db, usersCollection, authUser.uid);
+    const normalizedStatus = normalizeOptionalString(firestoreUser?.status)?.toLowerCase();
+
+    if (authUser.disabled || isInactiveAdminStatus(normalizedStatus)) {
+      const inactiveMessage =
+        normalizedStatus === 'suspended'
+          ? 'This admin account is currently suspended.'
+          : normalizedStatus === 'blocked'
+            ? 'This admin account is currently blocked.'
+            : normalizedStatus === 'rejected'
+              ? 'This admin account is not authorized for admin access.'
+              : 'This admin account is currently unavailable.';
+
+      return toFailureResult(identifierType, 403, 'ADMIN_ACCOUNT_INACTIVE', inactiveMessage);
+    }
+
+    return {
+      ok: true,
+      value: {
+        email: canonicalEmail,
+        uid: authUser.uid,
+        identifierType,
+        resolutionSource,
+        authDisabled: authUser.disabled,
+        hasFirestoreProfile: Boolean(firestoreUser),
+        status: normalizedStatus,
+        username:
+          username ||
+          normalizeOptionalString(firestoreUser?.username) ||
+          normalizeOptionalString(firestoreUser?.usernameLower),
+      },
+    };
+  } catch (error: any) {
+    if (error?.code === 'auth/user-not-found') {
+      return toFailureResult(
+        identifierType,
+        404,
+        'ADMIN_ACCOUNT_NOT_FOUND',
+        identifierType === 'email'
+          ? 'No admin account was found with this email.'
+          : 'No admin account was found with this username.'
+      );
+    }
+
+    throw error;
+  }
+}
+
+export async function resolveAdminLoginIdentity(
+  options: ResolveAdminLoginIdentityOptions
+): Promise<AdminLoginIdentityResolution> {
+  const identifier = normalizeOptionalString(options.identifier);
+  if (!identifier) {
+    return toFailureResult('username', 400, 'INVALID_IDENTIFIER', 'Username or email is required.');
+  }
+
+  const identifierType = normalizeIdentifierType(identifier);
+  const authorizedAdminEmailMap = buildAdminEmailMap(options.authorizedAdminEmails);
+
+  if (identifierType === 'email') {
+    if (!isValidEmailFormat(identifier)) {
+      return toFailureResult('email', 400, 'INVALID_IDENTIFIER', 'Invalid email format.');
+    }
+
+    const canonicalEmail = authorizedAdminEmailMap.get(identifier.toLowerCase());
+    if (!canonicalEmail) {
+      return toFailureResult(
+        'email',
+        403,
+        'ADMIN_ACCOUNT_UNAUTHORIZED',
+        'This account is not authorized for admin access.'
+      );
+    }
+
+    return resolveAdminLoginIdentityByEmail({
+      ...options,
+      identifierType: 'email',
+      resolutionSource: 'admin_email',
+      canonicalEmail,
+    });
+  }
+
+  const usernameLower = identifier.toLowerCase();
+  const usernameSnapshot = await options.db
+    .collection(options.usersCollection)
+    .where('usernameLower', '==', usernameLower)
+    .limit(4)
+    .get();
+
+  const matchedAdminEmails = Array.from(
+    new Set(
+      usernameSnapshot.docs
+        .map((docSnap) => normalizeOptionalString(docSnap.data()?.email)?.toLowerCase())
+        .filter((email): email is string => Boolean(email))
+        .filter((email) => authorizedAdminEmailMap.has(email))
+    )
+  );
+
+  if (matchedAdminEmails.length > 1) {
+    return toFailureResult(
+      'username',
+      409,
+      'ADMIN_ACCOUNT_AMBIGUOUS',
+      'Multiple admin accounts matched this username. Use your admin email instead.'
+    );
+  }
+
+  if (matchedAdminEmails.length === 1) {
+    const canonicalEmail = authorizedAdminEmailMap.get(matchedAdminEmails[0]) as string;
+    return resolveAdminLoginIdentityByEmail({
+      ...options,
+      identifierType: 'username',
+      resolutionSource: 'username_lower',
+      canonicalEmail,
+      username: usernameLower,
+    });
+  }
+
+  const localPartMatches = Array.from(authorizedAdminEmailMap.values()).filter(
+    (email) => getEmailLocalPart(email) === usernameLower
+  );
+
+  if (localPartMatches.length > 1) {
+    return toFailureResult(
+      'username',
+      409,
+      'ADMIN_ACCOUNT_AMBIGUOUS',
+      'Multiple admin accounts matched this username. Use your admin email instead.'
+    );
+  }
+
+  if (localPartMatches.length === 1) {
+    return resolveAdminLoginIdentityByEmail({
+      ...options,
+      identifierType: 'username',
+      resolutionSource: 'email_local_part',
+      canonicalEmail: localPartMatches[0],
+      username: usernameLower,
+    });
+  }
+
+  return toFailureResult(
+    'username',
+    404,
+    'ADMIN_ACCOUNT_NOT_FOUND',
+    'No admin account was found with this username.'
+  );
+}
 
 export async function listAdminAccountDirectory(
   options: ListAdminAccountDirectoryOptions

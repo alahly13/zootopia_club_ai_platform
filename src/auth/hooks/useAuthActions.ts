@@ -33,6 +33,17 @@ const STATUS: Record<string, UserStatus> = {
 const USERNAME_RESOLUTION_TIMEOUT_MS = 8_000;
 const ADMIN_CLAIMS_SYNC_TIMEOUT_MS = 8_000;
 
+type LoginIdentifierKind = 'email' | 'username';
+
+type AdminIdentifierLookupResponse = {
+  success?: boolean;
+  email?: string;
+  identifierType?: LoginIdentifierKind;
+  resolutionSource?: 'admin_email' | 'username_lower' | 'email_local_part';
+  error?: string;
+  code?: string;
+};
+
 function normalizeAuthProviders(firebaseUser: FirebaseUser, existingProviders: string[] = []): string[] {
   const currentProviders = firebaseUser.providerData.map((p) => p.providerId);
   return Array.from(new Set([...existingProviders, ...currentProviders].filter(Boolean)));
@@ -121,6 +132,39 @@ async function fetchJsonWithTimeout(
   } finally {
     window.clearTimeout(timeoutId);
   }
+}
+
+function getIdentifierKind(identifier: string): LoginIdentifierKind {
+  return identifier.includes('@') ? 'email' : 'username';
+}
+
+function normalizeFriendlyAuthMessage(error: any, context: 'user' | 'admin'): string {
+  let friendlyMessage = error?.message || 'Authentication failed.';
+
+  if (error?.code === 'auth/user-not-found') {
+    friendlyMessage =
+      context === 'admin'
+        ? 'No admin account was found with this email.'
+        : 'No account found with this email.';
+  }
+  if (
+    error?.code === 'auth/wrong-password' ||
+    error?.code === 'auth/invalid-credential' ||
+    error?.code === 'auth/invalid-login-credentials'
+  ) {
+    friendlyMessage = 'Incorrect password.';
+  }
+  if (error?.code === 'auth/invalid-email') {
+    friendlyMessage = 'Invalid email format.';
+  }
+  if (error?.code === 'auth/network-request-failed') {
+    friendlyMessage = 'Network error. Please check your connection.';
+  }
+  if (error?.code === 'auth/too-many-requests') {
+    friendlyMessage = 'Too many login attempts. Please wait a moment and try again.';
+  }
+
+  return friendlyMessage;
 }
 
 export function useAuthActions(
@@ -476,14 +520,7 @@ export function useAuthActions(
       return userCredential.user;
     } catch (error: any) {
       logger.error('Login error', { error });
-
-      let friendlyMessage = error.message;
-      if (error.code === 'auth/user-not-found') friendlyMessage = 'No account found with this email.';
-      if (error.code === 'auth/wrong-password') friendlyMessage = 'Incorrect password.';
-      if (error.code === 'auth/invalid-email') friendlyMessage = 'Invalid email format.';
-      if (error.code === 'auth/network-request-failed') friendlyMessage = 'Network error. Please check your connection.';
-
-      throw new Error(friendlyMessage);
+      throw new Error(normalizeFriendlyAuthMessage(error, 'user'));
     }
   }, []);
 
@@ -672,50 +709,62 @@ export function useAuthActions(
   }, [checkUsernameAvailability, sendVerificationEmailSafe, logActivity]);
 
   const adminLogin = useCallback(async (identifier: string, password: string): Promise<FirebaseUser> => {
+    const normalizedIdentifier = identifier.trim();
+    const identifierKind = getIdentifierKind(normalizedIdentifier);
+
     try {
-      let email = identifier;
+      logger.info('Admin identifier lookup started', {
+        area: 'auth',
+        event: 'admin-login-lookup-start',
+        identifierKind,
+      });
 
-      if (!identifier.includes('@')) {
-        try {
-          const response = await fetchJsonWithTimeout(
-            `/api/resolve-username?username=${encodeURIComponent(identifier)}`,
-            {
-              method: 'GET',
-            },
-            USERNAME_RESOLUTION_TIMEOUT_MS,
-            'Admin username lookup timed out. Please try again or use your email.'
-          );
-          if (!response.ok) {
-            if (response.status === 404) {
-              throw new Error('No account found with this username.');
-            }
-            throw new Error('Unable to verify username. Please try again later.');
-          }
-          const data = await response.json();
-          email = data.email;
-        } catch (error: any) {
-          if (error.message === 'No account found with this username.') throw error;
-          throw new Error('Unable to connect to the server. Please check your connection or use your email.');
-        }
+      const lookupResponse = await fetchJsonWithTimeout(
+        `/api/auth/admin/resolve-identifier?identifier=${encodeURIComponent(normalizedIdentifier)}`,
+        {
+          method: 'GET',
+        },
+        USERNAME_RESOLUTION_TIMEOUT_MS,
+        identifierKind === 'username'
+          ? 'Admin username lookup timed out. Please try again or use your email.'
+          : 'Admin identity verification timed out. Please try again.'
+      );
+
+      const lookupPayload = await lookupResponse
+        .json()
+        .catch(() => ({} as AdminIdentifierLookupResponse)) as AdminIdentifierLookupResponse;
+
+      if (!lookupResponse.ok || !lookupPayload.email) {
+        throw new Error(
+          lookupPayload.error ||
+            (lookupResponse.status === 404
+              ? identifierKind === 'username'
+                ? 'No admin account was found with this username.'
+                : 'No admin account was found with this email.'
+              : 'Unable to verify your admin identity right now. Please try again shortly.')
+        );
       }
 
-      const adminIdentity = ADMIN_IDENTITIES.find((a) => a.email === email);
-      if (!adminIdentity) {
-        throw new Error('Unauthorized: You do not have admin access.');
-      }
+      logger.info('Admin identifier lookup resolved', {
+        area: 'auth',
+        event: 'admin-login-lookup-resolved',
+        identifierKind: lookupPayload.identifierType || identifierKind,
+        resolutionSource: lookupPayload.resolutionSource || 'admin_email',
+      });
+
+      const email = lookupPayload.email;
 
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
       return userCredential.user;
     } catch (error: any) {
-      logger.error('Admin login failed', { error });
+      logger.error('Admin login failed', {
+        area: 'auth',
+        event: 'admin-login-failed',
+        identifierKind,
+        error,
+      });
 
-      let friendlyMessage = error.message;
-      if (error.code === 'auth/user-not-found') friendlyMessage = 'No admin account found with this email.';
-      if (error.code === 'auth/wrong-password') friendlyMessage = 'Incorrect password.';
-      if (error.code === 'auth/invalid-email') friendlyMessage = 'Invalid email format.';
-      if (error.code === 'auth/network-request-failed') friendlyMessage = 'Network error. Please check your connection.';
-
-      throw new Error(friendlyMessage);
+      throw new Error(normalizeFriendlyAuthMessage(error, 'admin'));
     }
   }, []);
 

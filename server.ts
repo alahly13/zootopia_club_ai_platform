@@ -38,7 +38,10 @@ import {
   resolvePlatformAuthType,
 } from './server/authSessionService.js';
 import { resolveProviderRuntimeByModel, resolveQwenRuntime } from './server/providerRuntime.js';
-import { listAdminAccountDirectory } from './server/adminAccountDirectoryService';
+import {
+  listAdminAccountDirectory,
+  resolveAdminLoginIdentity,
+} from './server/adminAccountDirectoryService';
 import { applySecurityHeaders } from './server/securityHeaders';
 import { createRouteRateLimiter } from './server/rateLimit';
 import { buildProviderSecuritySummary } from './server/providerSecuritySummary';
@@ -217,6 +220,12 @@ const adminSecuritySummaryRateLimiter = createRouteRateLimiter({
   name: 'admin-security-summary',
   windowMs: 5 * 60 * 1000,
   maxRequests: 30,
+});
+
+const adminLoginLookupRateLimiter = createRouteRateLimiter({
+  name: 'admin-login-lookup',
+  windowMs: 5 * 60 * 1000,
+  maxRequests: 20,
 });
 
 const assetAccessRateLimiter = createRouteRateLimiter({
@@ -3698,6 +3707,95 @@ const logAdminUserAction = async (
     } catch (error: any) {
       console.error("Error checking username:", error);
       res.status(500).json({ available: false, error: error.message });
+    }
+  });
+
+  app.get('/api/auth/admin/resolve-identifier', adminLoginLookupRateLimiter, async (req, res) => {
+    /**
+     * SECURITY NOTE
+     * ------------------------------------------------------------------
+     * Admin username/email lookup must stay backend-authoritative so the
+     * login form never trusts frontend-only admin identity resolution.
+     * Keep the response minimal: canonical admin email plus safe metadata only.
+     */
+    const identifier = normalizeOptionalString(req.query.identifier);
+    const identifierType = identifier && identifier.includes('@') ? 'email' : 'username';
+
+    if (!identifier) {
+      return res.status(400).json({
+        success: false,
+        code: 'INVALID_IDENTIFIER',
+        error: 'Username or email is required.',
+      });
+    }
+
+    try {
+      logDiagnostic('info', 'auth.admin_login_lookup_started', {
+        area: 'auth',
+        route: '/api/auth/admin/resolve-identifier',
+        status: 'start',
+        details: {
+          identifierType,
+        },
+      });
+
+      const resolution = await resolveAdminLoginIdentity({
+        db,
+        auth: admin.auth(),
+        usersCollection: COLLECTIONS.USERS,
+        identifier,
+        authorizedAdminEmails: ADMIN_IDENTITIES.map((identity) => identity.email),
+      });
+
+      if (resolution.ok === false) {
+        const failure = resolution;
+        logDiagnostic('warn', 'auth.admin_login_lookup_rejected', {
+          area: 'auth',
+          route: '/api/auth/admin/resolve-identifier',
+          status: 'rejected',
+          details: {
+            identifierType: failure.identifierType,
+            code: failure.code,
+          },
+        });
+
+        return res.status(failure.status).json({
+          success: false,
+          code: failure.code,
+          error: failure.error,
+        });
+      }
+
+      logDiagnostic('info', 'auth.admin_login_lookup_resolved', {
+        area: 'auth',
+        route: '/api/auth/admin/resolve-identifier',
+        status: 'success',
+        details: {
+          identifierType: resolution.value.identifierType,
+          resolutionSource: resolution.value.resolutionSource,
+          hasFirestoreProfile: resolution.value.hasFirestoreProfile,
+        },
+      });
+
+      return res.json({
+        success: true,
+        email: resolution.value.email,
+        identifierType: resolution.value.identifierType,
+        resolutionSource: resolution.value.resolutionSource,
+      });
+    } catch (error: any) {
+      logDiagnostic('error', 'auth.admin_login_lookup_failed', {
+        area: 'auth',
+        route: '/api/auth/admin/resolve-identifier',
+        status: 'error',
+        details: normalizeError(error),
+      });
+
+      return res.status(500).json({
+        success: false,
+        code: 'ADMIN_LOOKUP_FAILED',
+        error: 'Admin identity lookup failed. Please try again shortly.',
+      });
     }
   });
 

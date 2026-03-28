@@ -1,7 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type admin from 'firebase-admin';
-import { buildAdminDirectoryUserRecord } from '../server/adminAccountDirectoryService.ts';
+import {
+  buildAdminDirectoryUserRecord,
+  resolveAdminLoginIdentity,
+} from '../server/adminAccountDirectoryService.ts';
+
+function buildProviderInfo(overrides: Partial<admin.auth.UserInfo> = {}): admin.auth.UserInfo {
+  return {
+    providerId: 'password',
+    uid: 'provider-user',
+    email: 'linked@example.com',
+    displayName: 'Linked User',
+    phoneNumber: '',
+    photoURL: '',
+    toJSON: () => ({}),
+    ...overrides,
+  } as admin.auth.UserInfo;
+}
 
 function buildAuthUser(overrides: Partial<admin.auth.UserRecord> = {}): admin.auth.UserRecord {
   return {
@@ -13,22 +29,22 @@ function buildAuthUser(overrides: Partial<admin.auth.UserRecord> = {}): admin.au
     phoneNumber: '',
     photoURL: '',
     providerData: [
-      {
+      buildProviderInfo({
         providerId: 'google.com',
         uid: 'google-linked-user',
         email: 'linked@example.com',
         displayName: 'Linked User',
         phoneNumber: '',
         photoURL: '',
-      },
-      {
+      }),
+      buildProviderInfo({
         providerId: 'password',
         uid: 'linked@example.com',
         email: 'linked@example.com',
         displayName: 'Linked User',
         phoneNumber: '',
         photoURL: '',
-      },
+      }),
     ],
     customClaims: {
       role: 'Admin',
@@ -81,14 +97,14 @@ test('auth-only accounts stay visible and become view-only until firestore linka
       displayName: '',
       phoneNumber: '+201234567890',
       providerData: [
-        {
+        buildProviderInfo({
           providerId: 'phone',
           uid: '+201234567890',
           email: '',
           displayName: '',
           phoneNumber: '+201234567890',
           photoURL: '',
-        },
+        }),
       ],
       customClaims: {},
     }),
@@ -131,14 +147,14 @@ test('temporary fast-access scope mismatches are surfaced and routed away from g
       customClaims: {},
       email: 'temp-fast@example.com',
       providerData: [
-        {
+        buildProviderInfo({
           providerId: 'phone',
           uid: '+201111111111',
           email: '',
           displayName: 'Fast Access Student',
           phoneNumber: '+201111111111',
           photoURL: '',
-        },
+        }),
       ],
     }),
     firestoreUser: {
@@ -160,4 +176,141 @@ test('temporary fast-access scope mismatches are surfaced and routed away from g
   assert.equal(record?.accountScope, 'full_account');
   assert.equal(record?.accountLinkage.adminManagementMode, 'specialized_fast_access');
   assert.ok(record?.accountLinkage.issues.includes('fast-access-scope-mismatch'));
+});
+
+test('admin login identity resolves reserved username local-part to canonical admin email', async () => {
+  const auth = {
+    getUserByEmail: async (email: string) =>
+      ({
+        uid: 'admin-uid',
+        email,
+        disabled: false,
+      }) as admin.auth.UserRecord,
+  } as admin.auth.Auth;
+
+  const db = {
+    collection: (collectionName: string) => {
+      assert.equal(collectionName, 'users');
+      return {
+        where: () => ({
+          limit: () => ({
+            get: async () => ({
+              docs: [],
+            }),
+          }),
+        }),
+        doc: (uid: string) => {
+          assert.equal(uid, 'admin-uid');
+          return {
+            get: async () => ({
+              exists: true,
+              data: () => ({
+                username: 'elmahdy',
+                status: 'Active',
+              }),
+            }),
+          };
+        },
+      };
+    },
+  } as any;
+
+  const resolution = await resolveAdminLoginIdentity({
+    db,
+    auth,
+    usersCollection: 'users',
+    identifier: 'elmahdy',
+    authorizedAdminEmails: ['elmahdy@admin.com'],
+  });
+
+  assert.equal(resolution.ok, true);
+  if (!resolution.ok) {
+    throw new Error('Expected successful admin resolution.');
+  }
+  assert.equal(resolution.value.email, 'elmahdy@admin.com');
+  assert.equal(resolution.value.identifierType, 'username');
+  assert.equal(resolution.value.resolutionSource, 'email_local_part');
+});
+
+test('admin login identity rejects ambiguous reserved admin username matches', async () => {
+  const auth = {} as admin.auth.Auth;
+  const db = {
+    collection: () => ({
+      where: () => ({
+        limit: () => ({
+          get: async () => ({
+            docs: [],
+          }),
+        }),
+      }),
+    }),
+  } as any;
+
+  const resolution = await resolveAdminLoginIdentity({
+    db,
+    auth,
+    usersCollection: 'users',
+    identifier: 'admin',
+    authorizedAdminEmails: ['admin@example.com', 'admin@another.com'],
+  });
+
+  assert.equal(resolution.ok, false);
+  if (resolution.ok) {
+    throw new Error('Expected ambiguous admin resolution failure.');
+  }
+  assert.equal(resolution.code, 'ADMIN_ACCOUNT_AMBIGUOUS');
+  assert.equal(resolution.status, 409);
+});
+
+test('admin login identity rejects suspended admin accounts before password auth', async () => {
+  const auth = {
+    getUserByEmail: async (email: string) =>
+      ({
+        uid: 'suspended-admin',
+        email,
+        disabled: false,
+      }) as admin.auth.UserRecord,
+  } as admin.auth.Auth;
+
+  const db = {
+    collection: () => ({
+      where: () => ({
+        limit: () => ({
+          get: async () => ({
+            docs: [
+              {
+                data: () => ({
+                  email: 'admin@example.com',
+                }),
+              },
+            ],
+          }),
+        }),
+      }),
+      doc: () => ({
+        get: async () => ({
+          exists: true,
+          data: () => ({
+            status: 'Suspended',
+            username: 'admin-user',
+          }),
+        }),
+      }),
+    }),
+  } as any;
+
+  const resolution = await resolveAdminLoginIdentity({
+    db,
+    auth,
+    usersCollection: 'users',
+    identifier: 'admin-user',
+    authorizedAdminEmails: ['admin@example.com'],
+  });
+
+  assert.equal(resolution.ok, false);
+  if (resolution.ok) {
+    throw new Error('Expected inactive admin resolution failure.');
+  }
+  assert.equal(resolution.code, 'ADMIN_ACCOUNT_INACTIVE');
+  assert.equal(resolution.status, 403);
 });
