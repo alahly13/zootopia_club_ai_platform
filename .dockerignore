@@ -7,8 +7,7 @@ runtime
 # `/app/serviceAccountKey.json` for the current Firebase Admin fallback path.
 # Remove that allowance after migrating to Secret Manager or attached runtime
 # credentials.
-.env
-.env.*
+
 !.env.example
 # `cloudrun.env` is consumed locally by `gcloud --env-vars-file` and should not
 # be copied into the runtime image.

@@ -314,3 +314,109 @@ test('admin login identity rejects suspended admin accounts before password auth
   assert.equal(resolution.code, 'ADMIN_ACCOUNT_INACTIVE');
   assert.equal(resolution.status, 403);
 });
+
+test('admin login identity falls back safely when admin auth directory credentials are unavailable for email lookup', async () => {
+  const auth = {
+    getUserByEmail: async () => {
+      throw Object.assign(new Error('invalid_grant: Invalid JWT Signature.'), {
+        code: 'app/invalid-credential',
+      });
+    },
+  } as admin.auth.Auth;
+
+  const db = {} as any;
+
+  const resolution = await resolveAdminLoginIdentity({
+    db,
+    auth,
+    usersCollection: 'users',
+    identifier: 'elmahdy@admin.com',
+    authorizedAdminEmails: ['elmahdy@admin.com'],
+  });
+
+  assert.equal(resolution.ok, true);
+  if (!resolution.ok) {
+    throw new Error('Expected credential fallback admin resolution.');
+  }
+
+  assert.equal(resolution.value.email, 'elmahdy@admin.com');
+  assert.equal(resolution.value.lookupMode, 'credential_fallback');
+  assert.equal(resolution.value.hasFirestoreProfile, false);
+});
+
+test('admin login identity falls back to reserved email local-part when username directory is unavailable', async () => {
+  const auth = {
+    getUserByEmail: async () => {
+      throw Object.assign(new Error('invalid_grant: Invalid JWT Signature.'), {
+        code: 'app/invalid-credential',
+      });
+    },
+  } as admin.auth.Auth;
+
+  const db = {
+    collection: () => ({
+      where: () => ({
+        limit: () => ({
+          get: async () => {
+            throw Object.assign(
+              new Error('16 UNAUTHENTICATED: Request had invalid authentication credentials.'),
+              { code: 16 }
+            );
+          },
+        }),
+      }),
+    }),
+  } as any;
+
+  const resolution = await resolveAdminLoginIdentity({
+    db,
+    auth,
+    usersCollection: 'users',
+    identifier: 'elmahdy',
+    authorizedAdminEmails: ['elmahdy@admin.com'],
+  });
+
+  assert.equal(resolution.ok, true);
+  if (!resolution.ok) {
+    throw new Error('Expected credential fallback username resolution.');
+  }
+
+  assert.equal(resolution.value.email, 'elmahdy@admin.com');
+  assert.equal(resolution.value.resolutionSource, 'email_local_part');
+  assert.equal(resolution.value.lookupMode, 'credential_fallback');
+});
+
+test('admin login identity reports directory unavailability when username lookup cannot be verified safely', async () => {
+  const auth = {} as admin.auth.Auth;
+
+  const db = {
+    collection: () => ({
+      where: () => ({
+        limit: () => ({
+          get: async () => {
+            throw Object.assign(
+              new Error('16 UNAUTHENTICATED: Request had invalid authentication credentials.'),
+              { code: 16 }
+            );
+          },
+        }),
+      }),
+    }),
+  } as any;
+
+  const resolution = await resolveAdminLoginIdentity({
+    db,
+    auth,
+    usersCollection: 'users',
+    identifier: 'primary-admin',
+    authorizedAdminEmails: ['elmahdy@admin.com'],
+  });
+
+  assert.equal(resolution.ok, false);
+  if (resolution.ok) {
+    throw new Error('Expected directory unavailable resolution failure.');
+  }
+
+  assert.equal(resolution.code, 'ADMIN_DIRECTORY_UNAVAILABLE');
+  assert.equal(resolution.status, 503);
+});

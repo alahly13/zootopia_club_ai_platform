@@ -11,8 +11,8 @@ dist/
 runtime/
 build/
 coverage/
-.env
-.env.*
+
+
 !.env.example
 # `cloudrun.env` is a local deploy/update input for `gcloud --env-vars-file`;
 # keep it out of uploaded source and the final image.

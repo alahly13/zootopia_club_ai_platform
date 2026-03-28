@@ -5,9 +5,5 @@ coverage/
 .DS_Store
 *.log
 .venv/
-.env*
 !.env.example
-# Local-only deployment inputs. These stay out of Git even when Cloud Run
-# intentionally consumes them through `.gcloudignore`/`.dockerignore`.
-cloudrun.env
-serviceAccountKey.json
+server/documentRuntime/python/__pycache__/

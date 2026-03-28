@@ -5747,3 +5747,48 @@ pm run build\ successfully.
   - Did not perform a broad auth rewrite, change route ownership, change admin claims flow, or alter post-login admin restore behavior.
   - Validation completed with focused tests:
     - `node_modules\.bin\tsx.cmd --test tests\adminAccountDirectoryService.test.ts tests\errorClassification.test.ts`
+
+[2026-03-28]
+- Area: Local Admin Authentication / Resolver Recovery / Session Bootstrap Hardening
+- Files: /server.ts, /server/adminAccountDirectoryService.ts, /src/auth/hooks/useAuthActions.ts, /tests/adminAccountDirectoryService.test.ts, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Fixed the local admin login resolver failure by hardening admin identifier lookup and admin session bootstrap against invalid local Firebase Admin credentials, while preserving the existing Firebase password auth and admin-only session architecture.
+- Reason: The local admin login was not failing at the password step. The actual local failure happened earlier in `GET /api/auth/admin/resolve-identifier`, where the bundled `serviceAccountKey.json` could initialize Firebase Admin but then failed privileged Firestore/Auth calls with invalid-credential errors (`Invalid JWT Signature` / Firestore `16 UNAUTHENTICATED`). That caused the admin resolver to throw a 500 and surface `Admin identity lookup failed` before Firebase Auth ever received the canonical email.
+- Technical Details:
+  - Root cause confirmed from the live local server log:
+    - username path: Firestore admin query failed with `16 UNAUTHENTICATED`
+    - email path: Firebase Admin auth lookup failed with `app/invalid-credential` / `invalid_grant: Invalid JWT Signature`
+  - Hardened `server/adminAccountDirectoryService.ts`:
+    - Added recoverable Admin-SDK credential detection for revoked/stale local credentials and bounded lookup timeouts so resolver requests do not hang indefinitely behind bad local Admin SDK calls.
+    - Added safe credential-fallback resolution mode for reserved admin identifiers:
+      - email path can now return the canonical reserved admin email even when privileged Admin SDK lookup is unavailable locally
+      - username path now prefers the backend-owned reserved email local-part fallback before Firestore username querying, so `elmahdy` resolves quickly to `elmahdy@admin.com` even when local Firestore Admin access is degraded
+    - Added precise safe failure `ADMIN_DIRECTORY_UNAVAILABLE` when a non-local-part username cannot be verified safely because the local admin directory backend is unavailable.
+  - Hardened `server.ts` auth bootstrap path:
+    - Added reserved-admin fallback user-data loading for auth middleware / session bootstrap / refresh / logout when Firestore Admin reads fail only because local Admin credentials are invalid.
+    - Preserved admin-only determination from backend-owned reserved admin identities and preserved auth-mode/session isolation (`admin`, `normal`, `fast_access` stay separate).
+    - Extended backend diagnostics to record resolver fallback mode and session user-data fallback events.
+  - Hardened frontend diagnostics in `src/auth/hooks/useAuthActions.ts`:
+    - Added concise admin diagnostics for lookup rejection, canonical-email handoff, Firebase password auth start/success, and Firebase auth rejection code.
+    - Added safe handling for disabled-account messaging and kept Firebase password validation as the final credential check.
+  - Live local verification:
+    - `curl.exe -s -i "http://127.0.0.1:3000/api/auth/admin/resolve-identifier?identifier=elmahdy"` now returns `200` with `email=elmahdy@admin.com`, `identifierType=username`, `resolutionSource=email_local_part`
+    - `curl.exe -s -i "http://127.0.0.1:3000/api/auth/admin/resolve-identifier?identifier=elmahdy@admin.com"` now returns `200` with `email=elmahdy@admin.com`, `identifierType=email`, `resolutionSource=admin_email`
+    - local server diagnostics now show `lookupMode=credential_fallback` instead of the previous 500-failure path
+- Risks / Dependencies:
+  - This recovery path is intentionally narrow and reserved-admin-only; it does not broaden admin eligibility and does not bypass Firebase password auth.
+  - Local privileged Admin SDK access is still degraded until the bundled local service-account key is refreshed or replaced; this fix keeps admin login/session entry working locally without silently trusting the frontend, but broader backend admin data routes may still depend on valid local Admin credentials.
+  - Session bootstrap fallback depends on the reserved admin identity list staying aligned with the intended local admin emails.
+- Notes:
+  - Preserved:
+    - current login/session architecture
+    - Firebase password validation
+    - `AuthContext` authoritative bootstrap
+    - `ProtectedRoute` admin gating
+    - strict separation between admin, normal, and fast-access auth modes
+  - Intentionally left untouched:
+    - normal-user auth flow behavior
+    - fast-access auth flow behavior
+    - Cloud Run / Hosting deployment design
+    - unrelated admin panel feature routes outside the login/session entry path
+  - Focused verification completed with:
+    - `node_modules\.bin\tsx.cmd --test tests\adminAccountDirectoryService.test.ts tests\errorClassification.test.ts`

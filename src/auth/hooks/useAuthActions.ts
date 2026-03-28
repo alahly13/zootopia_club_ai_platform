@@ -138,6 +138,21 @@ function getIdentifierKind(identifier: string): LoginIdentifierKind {
   return identifier.includes('@') ? 'email' : 'username';
 }
 
+function maskEmailForDiagnostics(email: string): string {
+  const normalized = email.trim().toLowerCase();
+  const [localPart, domain = ''] = normalized.split('@');
+
+  if (!localPart || !domain) {
+    return normalized;
+  }
+
+  if (localPart.length <= 2) {
+    return `${localPart[0] || '*'}*@${domain}`;
+  }
+
+  return `${localPart.slice(0, 2)}***@${domain}`;
+}
+
 function normalizeFriendlyAuthMessage(error: any, context: 'user' | 'admin'): string {
   let friendlyMessage = error?.message || 'Authentication failed.';
 
@@ -156,6 +171,12 @@ function normalizeFriendlyAuthMessage(error: any, context: 'user' | 'admin'): st
   }
   if (error?.code === 'auth/invalid-email') {
     friendlyMessage = 'Invalid email format.';
+  }
+  if (error?.code === 'auth/user-disabled') {
+    friendlyMessage =
+      context === 'admin'
+        ? 'This admin account is currently disabled.'
+        : 'This account is currently disabled.';
   }
   if (error?.code === 'auth/network-request-failed') {
     friendlyMessage = 'Network error. Please check your connection.';
@@ -735,6 +756,14 @@ export function useAuthActions(
         .catch(() => ({} as AdminIdentifierLookupResponse)) as AdminIdentifierLookupResponse;
 
       if (!lookupResponse.ok || !lookupPayload.email) {
+        logger.warn('Admin identifier lookup rejected', {
+          area: 'auth',
+          event: 'admin-login-lookup-rejected',
+          identifierKind,
+          statusCode: lookupResponse.status,
+          code: lookupPayload.code || null,
+        });
+
         throw new Error(
           lookupPayload.error ||
             (lookupResponse.status === 404
@@ -750,17 +779,34 @@ export function useAuthActions(
         event: 'admin-login-lookup-resolved',
         identifierKind: lookupPayload.identifierType || identifierKind,
         resolutionSource: lookupPayload.resolutionSource || 'admin_email',
+        canonicalEmail: maskEmailForDiagnostics(lookupPayload.email),
       });
 
       const email = lookupPayload.email;
 
+      logger.info('Admin Firebase password authentication started', {
+        area: 'auth',
+        event: 'admin-login-firebase-auth-start',
+        identifierKind,
+        canonicalEmail: maskEmailForDiagnostics(email),
+      });
+
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
+
+      logger.info('Admin Firebase password authentication succeeded', {
+        area: 'auth',
+        event: 'admin-login-firebase-auth-success',
+        identifierKind,
+        currentUserId: userCredential.user.uid,
+      });
+
       return userCredential.user;
     } catch (error: any) {
       logger.error('Admin login failed', {
         area: 'auth',
         event: 'admin-login-failed',
         identifierKind,
+        firebaseCode: typeof error?.code === 'string' ? error.code : null,
         error,
       });
 

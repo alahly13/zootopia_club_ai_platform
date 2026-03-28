@@ -165,11 +165,12 @@ export interface ResolveAdminLoginIdentityOptions {
 
 export interface ResolvedAdminLoginIdentity {
   email: string;
-  uid: string;
+  uid?: string;
   identifierType: 'email' | 'username';
   resolutionSource: 'admin_email' | 'username_lower' | 'email_local_part';
   authDisabled: boolean;
   hasFirestoreProfile: boolean;
+  lookupMode?: 'verified' | 'credential_fallback';
   status?: string;
   username?: string;
 }
@@ -179,7 +180,8 @@ export type AdminLoginIdentityResolutionCode =
   | 'ADMIN_ACCOUNT_NOT_FOUND'
   | 'ADMIN_ACCOUNT_UNAUTHORIZED'
   | 'ADMIN_ACCOUNT_AMBIGUOUS'
-  | 'ADMIN_ACCOUNT_INACTIVE';
+  | 'ADMIN_ACCOUNT_INACTIVE'
+  | 'ADMIN_DIRECTORY_UNAVAILABLE';
 
 export type AdminLoginIdentityResolution =
   | {
@@ -235,6 +237,61 @@ const buildAdminEmailMap = (authorizedAdminEmails: string[]) => {
 const getEmailLocalPart = (email: string): string => {
   return normalizeString(email.split('@')[0]).toLowerCase();
 };
+
+const ADMIN_LOOKUP_TIMEOUT_MS = 2_500;
+
+const withAdminLookupTimeout = async <T>(promise: Promise<T>, timeoutMessage: string): Promise<T> => {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(Object.assign(new Error(timeoutMessage), { code: 'lookup_timeout' }));
+        }, ADMIN_LOOKUP_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+};
+
+/**
+ * Local admin auth needs a safe fallback when the bundled Firebase Admin
+ * credential is stale or revoked. In that case we can still resolve
+ * backend-owned admin identifiers and let Firebase client password auth remain
+ * the final credential check.
+ */
+export function isRecoverableAdminCredentialError(error: unknown): boolean {
+  const code =
+    typeof (error as { code?: unknown })?.code === 'string'
+      ? String((error as { code?: unknown }).code).toLowerCase()
+      : (error as { code?: unknown })?.code === 16
+        ? '16'
+        : '';
+  const message =
+    typeof (error as { message?: unknown })?.message === 'string'
+      ? String((error as { message?: unknown }).message).toLowerCase()
+      : '';
+
+  if (code === 'app/invalid-credential') {
+    return true;
+  }
+
+  if (code === '16' && message.includes('authentication credential')) {
+    return true;
+  }
+
+  return (
+    code === 'lookup_timeout' ||
+    message.includes('invalid jwt signature') ||
+    message.includes('failed to fetch a valid google oauth2 access token') ||
+    message.includes('invalid authentication credentials')
+  );
+}
 
 const toFailureResult = (
   identifierType: 'email' | 'username',
@@ -697,9 +754,47 @@ async function resolveAdminLoginIdentityByEmail(
 ): Promise<AdminLoginIdentityResolution> {
   const { auth, db, usersCollection, canonicalEmail, identifierType, resolutionSource, username } = options;
 
+  let authUser: admin.auth.UserRecord | null = null;
   try {
-    const authUser = await auth.getUserByEmail(canonicalEmail);
-    const firestoreUser = await loadFirestoreAdminCandidate(db, usersCollection, authUser.uid);
+    authUser = await withAdminLookupTimeout(
+      auth.getUserByEmail(canonicalEmail),
+      'Admin identity auth lookup timed out.'
+    );
+  } catch (error: any) {
+    if (error?.code === 'auth/user-not-found') {
+      return toFailureResult(
+        identifierType,
+        404,
+        'ADMIN_ACCOUNT_NOT_FOUND',
+        identifierType === 'email'
+          ? 'No admin account was found with this email.'
+          : 'No admin account was found with this username.'
+      );
+    }
+
+    if (isRecoverableAdminCredentialError(error)) {
+      return {
+        ok: true,
+        value: {
+          email: canonicalEmail,
+          identifierType,
+          resolutionSource,
+          authDisabled: false,
+          hasFirestoreProfile: false,
+          lookupMode: 'credential_fallback',
+          username,
+        },
+      };
+    }
+
+    throw error;
+  }
+
+  try {
+    const firestoreUser = await withAdminLookupTimeout(
+      loadFirestoreAdminCandidate(db, usersCollection, authUser.uid),
+      'Admin directory profile lookup timed out.'
+    );
     const normalizedStatus = normalizeOptionalString(firestoreUser?.status)?.toLowerCase();
 
     if (authUser.disabled || isInactiveAdminStatus(normalizedStatus)) {
@@ -724,6 +819,7 @@ async function resolveAdminLoginIdentityByEmail(
         resolutionSource,
         authDisabled: authUser.disabled,
         hasFirestoreProfile: Boolean(firestoreUser),
+        lookupMode: 'verified',
         status: normalizedStatus,
         username:
           username ||
@@ -732,15 +828,20 @@ async function resolveAdminLoginIdentityByEmail(
       },
     };
   } catch (error: any) {
-    if (error?.code === 'auth/user-not-found') {
-      return toFailureResult(
-        identifierType,
-        404,
-        'ADMIN_ACCOUNT_NOT_FOUND',
-        identifierType === 'email'
-          ? 'No admin account was found with this email.'
-          : 'No admin account was found with this username.'
-      );
+    if (isRecoverableAdminCredentialError(error)) {
+      return {
+        ok: true,
+        value: {
+          email: canonicalEmail,
+          uid: authUser.uid,
+          identifierType,
+          resolutionSource,
+          authDisabled: authUser.disabled,
+          hasFirestoreProfile: false,
+          lookupMode: 'credential_fallback',
+          username,
+        },
+      };
     }
 
     throw error;
@@ -782,15 +883,56 @@ export async function resolveAdminLoginIdentity(
   }
 
   const usernameLower = identifier.toLowerCase();
-  const usernameSnapshot = await options.db
-    .collection(options.usersCollection)
-    .where('usernameLower', '==', usernameLower)
-    .limit(4)
-    .get();
+  const localPartMatches = Array.from(authorizedAdminEmailMap.values()).filter(
+    (email) => getEmailLocalPart(email) === usernameLower
+  );
+
+  if (localPartMatches.length > 1) {
+    return toFailureResult(
+      'username',
+      409,
+      'ADMIN_ACCOUNT_AMBIGUOUS',
+      'Multiple admin accounts matched this username. Use your admin email instead.'
+    );
+  }
+
+  if (localPartMatches.length === 1) {
+    return resolveAdminLoginIdentityByEmail({
+      ...options,
+      identifierType: 'username',
+      resolutionSource: 'email_local_part',
+      canonicalEmail: localPartMatches[0],
+      username: usernameLower,
+    });
+  }
+
+  let usernameSnapshot:
+    | {
+        docs: Array<{ data: () => Record<string, unknown> }>;
+      }
+    | null = null;
+  let usernameDirectoryUnavailable = false;
+
+  try {
+    usernameSnapshot = await withAdminLookupTimeout(
+      options.db
+        .collection(options.usersCollection)
+        .where('usernameLower', '==', usernameLower)
+        .limit(4)
+        .get(),
+      'Admin username directory lookup timed out.'
+    );
+  } catch (error) {
+    if (!isRecoverableAdminCredentialError(error)) {
+      throw error;
+    }
+
+    usernameDirectoryUnavailable = true;
+  }
 
   const matchedAdminEmails = Array.from(
     new Set(
-      usernameSnapshot.docs
+      (usernameSnapshot?.docs || [])
         .map((docSnap) => normalizeOptionalString(docSnap.data()?.email)?.toLowerCase())
         .filter((email): email is string => Boolean(email))
         .filter((email) => authorizedAdminEmailMap.has(email))
@@ -817,27 +959,13 @@ export async function resolveAdminLoginIdentity(
     });
   }
 
-  const localPartMatches = Array.from(authorizedAdminEmailMap.values()).filter(
-    (email) => getEmailLocalPart(email) === usernameLower
-  );
-
-  if (localPartMatches.length > 1) {
+  if (usernameDirectoryUnavailable) {
     return toFailureResult(
       'username',
-      409,
-      'ADMIN_ACCOUNT_AMBIGUOUS',
-      'Multiple admin accounts matched this username. Use your admin email instead.'
+      503,
+      'ADMIN_DIRECTORY_UNAVAILABLE',
+      'Admin username verification is temporarily unavailable. Please use your admin email or try again shortly.'
     );
-  }
-
-  if (localPartMatches.length === 1) {
-    return resolveAdminLoginIdentityByEmail({
-      ...options,
-      identifierType: 'username',
-      resolutionSource: 'email_local_part',
-      canonicalEmail: localPartMatches[0],
-      username: usernameLower,
-    });
   }
 
   return toFailureResult(

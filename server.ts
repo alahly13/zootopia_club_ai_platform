@@ -40,6 +40,7 @@ import {
 import { resolveProviderRuntimeByModel, resolveQwenRuntime } from './server/providerRuntime.js';
 import {
   listAdminAccountDirectory,
+  isRecoverableAdminCredentialError,
   resolveAdminLoginIdentity,
 } from './server/adminAccountDirectoryService';
 import { applySecurityHeaders } from './server/securityHeaders';
@@ -1062,18 +1063,53 @@ const isReservedAdminEmail = (value: unknown): boolean => {
   return ADMIN_IDENTITIES.some((identity) => String(identity.email || '').trim().toLowerCase() === email);
 };
 
+const getReservedAdminIdentity = (value: unknown) => {
+  const email = String(value || '').trim().toLowerCase();
+  if (!email) {
+    return null;
+  }
+
+  return (
+    ADMIN_IDENTITIES.find(
+      (identity) => String(identity.email || '').trim().toLowerCase() === email
+    ) || null
+  );
+};
+
+const buildReservedAdminFallbackUserData = (
+  decodedToken: admin.auth.DecodedIdToken
+): Record<string, unknown> | null => {
+  const adminIdentity = getReservedAdminIdentity(decodedToken?.email);
+  if (!adminIdentity) {
+    return null;
+  }
+
+  const signInProvider = normalizeOptionalString((decodedToken as any)?.firebase?.sign_in_provider);
+
+  return {
+    email: adminIdentity.email,
+    role: 'Admin',
+    adminLevel: adminIdentity.level,
+    status: 'Active',
+    authProviders: signInProvider ? [signInProvider] : [],
+  };
+};
+
 const resolveRoleContext = (
   decodedToken: admin.auth.DecodedIdToken,
   userData: Record<string, unknown> | undefined
 ) => {
   const claimRole = normalizeRoleLabel((decodedToken as any)?.role);
   const docRole = normalizeRoleLabel(userData?.role);
-  const adminByEmail = isReservedAdminEmail(decodedToken?.email);
-  const isAdmin = claimRole === 'Admin' || docRole === 'Admin' || adminByEmail;
+  const reservedAdminIdentity = getReservedAdminIdentity(decodedToken?.email);
+  const isAdmin = claimRole === 'Admin' || docRole === 'Admin' || Boolean(reservedAdminIdentity);
 
   return {
     role: isAdmin ? 'Admin' as const : 'User' as const,
-    adminLevel: normalizeOptionalString(userData?.adminLevel) || normalizeOptionalString((decodedToken as any)?.adminLevel),
+    adminLevel:
+      normalizeOptionalString(userData?.adminLevel) ||
+      normalizeOptionalString((decodedToken as any)?.adminLevel) ||
+      normalizeOptionalString(reservedAdminIdentity?.level),
     isAdmin,
     normalizedStatus: normalizeUserStatusLabel(userData?.status),
   };
@@ -1119,6 +1155,40 @@ const buildSessionBootstrapInput = (params: {
       source: params.source,
     },
   };
+};
+
+const loadAuthBootstrapUserData = async (
+  decodedToken: admin.auth.DecodedIdToken,
+  stage: 'middleware' | 'bootstrap' | 'refresh' | 'logout'
+) => {
+  try {
+    const userDoc = await db.collection(COLLECTIONS.USERS).doc(decodedToken.uid).get();
+    return {
+      userData: (userDoc.data() || {}) as Record<string, unknown>,
+      usedFallback: false,
+    };
+  } catch (error) {
+    const fallbackUserData = buildReservedAdminFallbackUserData(decodedToken);
+    if (!fallbackUserData || !isRecoverableAdminCredentialError(error)) {
+      throw error;
+    }
+
+    logDiagnostic('warn', 'auth.session.userdata_fallback', {
+      area: 'auth',
+      userId: decodedToken.uid,
+      stage,
+      status: 'fallback',
+      details: {
+        email: decodedToken.email || null,
+        reason: 'firebase_admin_credential_unavailable',
+      },
+    });
+
+    return {
+      userData: fallbackUserData,
+      usedFallback: true,
+    };
+  }
 };
 
 const sendAuthSessionError = (
@@ -1558,8 +1628,7 @@ const logAdminUserAction = async (
 
     try {
       const decodedToken = await admin.auth().verifyIdToken(idToken);
-      const userDoc = await db.collection(COLLECTIONS.USERS).doc(decodedToken.uid).get();
-      const userData = (userDoc.data() || {}) as Record<string, unknown>;
+      const { userData } = await loadAuthBootstrapUserData(decodedToken, 'middleware');
       const roleContext = resolveRoleContext(decodedToken, userData);
 
       if (!roleContext.isAdmin && ['suspended', 'blocked', 'rejected'].includes(roleContext.normalizedStatus)) {
@@ -1716,8 +1785,7 @@ const logAdminUserAction = async (
 
     try {
       const decodedToken = await admin.auth().verifyIdToken(idToken);
-      const userDoc = await db.collection(COLLECTIONS.USERS).doc(decodedToken.uid).get();
-      const userData = (userDoc.data() || {}) as Record<string, unknown>;
+      const { userData } = await loadAuthBootstrapUserData(decodedToken, 'bootstrap');
       const roleContext = resolveRoleContext(decodedToken, userData);
       const expectedAuthType = normalizeExpectedAuthType(req.body?.expectedAuthType);
       const sessionBootstrap = buildSessionBootstrapInput({
@@ -1749,8 +1817,7 @@ const logAdminUserAction = async (
 
     try {
       const decodedToken = await admin.auth().verifyIdToken(idToken);
-      const userDoc = await db.collection(COLLECTIONS.USERS).doc(decodedToken.uid).get();
-      const userData = (userDoc.data() || {}) as Record<string, unknown>;
+      const { userData } = await loadAuthBootstrapUserData(decodedToken, 'refresh');
       const roleContext = resolveRoleContext(decodedToken, userData);
       const expectedAuthType = normalizeExpectedAuthType(req.body?.expectedAuthType);
       const sessionBootstrap = buildSessionBootstrapInput({
@@ -1782,8 +1849,7 @@ const logAdminUserAction = async (
 
     try {
       const decodedToken = await admin.auth().verifyIdToken(idToken);
-      const userDoc = await db.collection(COLLECTIONS.USERS).doc(decodedToken.uid).get();
-      const userData = (userDoc.data() || {}) as Record<string, unknown>;
+      const { userData } = await loadAuthBootstrapUserData(decodedToken, 'logout');
       const roleContext = resolveRoleContext(decodedToken, userData);
       const sessionBootstrap = buildSessionBootstrapInput({
         decodedToken,
@@ -3773,6 +3839,7 @@ const logAdminUserAction = async (
         details: {
           identifierType: resolution.value.identifierType,
           resolutionSource: resolution.value.resolutionSource,
+          lookupMode: resolution.value.lookupMode || 'verified',
           hasFirestoreProfile: resolution.value.hasFirestoreProfile,
         },
       });
