@@ -7,3 +7,7 @@ coverage/
 .venv/
 .env*
 !.env.example
+# Local-only deployment inputs. These stay out of Git even when Cloud Run
+# intentionally consumes them through `.gcloudignore`/`.dockerignore`.
+cloudrun.env
+serviceAccountKey.json

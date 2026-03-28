@@ -5488,3 +5488,220 @@ pm run build\ successfully.
 - Notes:
   - The repository already contained unrelated modified files before/during this pass; this entry only covers the owner files listed above.
   - The requested `documentPromptContextResolver.ts` and `documentCleanupCoordinator.ts` owner names do not exist in this repo; the real live owners are `promptContextResolver.ts` and `cleanupCoordinator.ts`.
+
+[2026-03-27]
+- Area: Startup / Auth Bootstrap / Session Lifetime / Recovery Diagnostics
+- Files: `/src/auth/AuthContext.tsx`, `/src/auth/hooks/useAuthActions.ts`, `/src/auth/session/sessionApi.ts`, `/src/auth/session/storage.ts`, `/src/components/ProtectedRoute.tsx`, `/src/App.tsx`, `/server/authSessionService.ts`, `/server.ts`, `/.env.example`, `/tests/authSessionLifetime.test.ts`, `/ZOOTOPIA_PROJECT_LEDGER.txt`
+- Summary: Stabilized platform entry by replacing the split startup/auth/session restore flow with one authoritative bootstrap coordinator, fixing the async profile-sync retry bug that produced half-restored sessions, propagating typed session failures end to end, and enforcing a hard maximum 3-hour session lifetime for normal, fast-access, and admin sessions.
+- Root Cause:
+  - The visible `Startup is taking longer than expected` screen was mostly a false recovery trigger caused by a real orchestration bug, not just a cosmetic timeout.
+  - `src/auth/AuthContext.tsx` treated `pendingFirebaseSession` as authenticated enough for route entry, so protected routes and admin routing could proceed before backend session validation and profile hydration were both complete.
+  - `src/auth/hooks/useAuthActions.ts` used `setTimeout(...syncUserWithFirestore...)` retries that returned early instead of awaiting the retried work. That let callers continue as if profile sync had finished even while restore work was still pending or had silently failed.
+  - Restore/login/bootstrap authority was split across:
+    - Firebase `onAuthStateChanged`
+    - frontend profile sync
+    - backend `/api/auth/session/bootstrap`
+    - route guards
+    - ad-hoc recovery timers
+  - Session lifetime enforcement was not anchored tightly enough to Firebase `auth_time`, so restore/refresh activity could continue around the intended maximum-lifetime policy.
+- Safe Fix Implemented:
+  - `src/auth/AuthContext.tsx`
+    - introduced a stronger startup state model:
+      - `bootstrapping`
+      - `restoring`
+      - `validating`
+      - `hydrating_profile`
+      - `authenticated`
+      - `unauthenticated`
+      - `expired`
+      - `invalid`
+      - `failed`
+      - `logging_out`
+    - removed optimistic `isAuthenticated` gating from `pendingFirebaseSession`
+    - now unlocks routing only after the authoritative bootstrap barrier finishes
+    - added a single retryable `runAuthoritativeBootstrap(...)` path used by:
+      - login
+      - identifier login
+      - admin login
+      - session restore
+    - dedupes overlapping bootstrap attempts for the same Firebase user and guards against stale late completions
+    - classifies recovery issues with explicit `reason` and `phase` metadata instead of showing a generic panic state without context
+    - adds client-side hard-expiry handling that signs out and clears stale restore state exactly at session expiry instead of allowing half-dead sessions to drift
+    - adds concise structured logs for:
+      - startup begin
+      - Firebase hydration resolved
+      - backend bootstrap begin/end
+      - workspace profile sync begin
+      - bootstrap success/failure
+      - hard expiry
+      - retry/reset actions
+  - `src/auth/hooks/useAuthActions.ts`
+    - `syncUserWithFirestore(...)` now returns the synchronized `User` and no longer mutates auth state out of band
+    - retry branches now `await` the next attempt instead of scheduling background retries and returning early
+    - login/admin sign-in helpers no longer perform a second hidden auth bootstrap path; they defer to the authoritative `AuthContext` coordinator
+  - `src/auth/session/sessionApi.ts`
+    - added typed `AuthSessionApiError`
+    - preserves backend error codes for:
+      - `SESSION_EXPIRED`
+      - `SESSION_MAX_LIFETIME_EXCEEDED`
+      - `SESSION_INVALIDATED`
+      - `SESSION_MISSING`
+      - `AUTH_MODE_MISMATCH`
+    - keeps bounded request timeouts for bootstrap / refresh / logout so real backend stalls surface deterministically instead of hanging the startup promise indefinitely
+  - `src/auth/session/storage.ts`
+    - stale/expired/invalid stored session snapshots are now pruned before restore
+    - stale auth-mode hints are cleared when their matching stored snapshot is no longer usable
+    - this prevents stale cross-mode browser persistence from re-entering bootstrap with an already-dead restore snapshot
+  - `src/components/ProtectedRoute.tsx`
+    - route protection now logs canonical gate outcomes:
+      - waiting for bootstrap
+      - redirect to login
+      - admin mismatch
+      - fast-access locks
+      - startup recovery shown
+      - allow
+    - preserves existing role boundaries and route behavior while making the gating decision observable
+  - `src/App.tsx`
+    - login-route guard now logs final route resolution decisions for authenticated restores instead of leaving that step opaque
+  - `server/authSessionService.ts`
+    - added hard lifetime helpers anchored to Firebase `auth_time`
+    - exported pure helpers for regression tests
+    - session fingerprints now key on login-time identity (`auth_time`) instead of silent token refresh `iat`, preventing unnecessary session churn during ordinary token refreshes
+    - `ensureMaximumLifetimeNotExceeded(...)` now rejects bootstrap/validation once the hard lifetime is over and invalidates the current server session as expired
+    - invalidation now distinguishes:
+      - `logging_out`
+      - `expired`
+      - `invalid`
+    - `resolveSessionTtlSec(...)` now clamps fast-access sessions by both:
+      - the 3-hour hard session maximum
+      - `temporaryAccessExpiresAt` when the temporary window ends sooner
+    - current-session refresh/touch keeps Redis TTL inside the remaining hard lifetime instead of extending it past the max window
+  - `server.ts`
+    - auth session endpoints now return structured auth-session errors through `sendAuthSessionError(...)`, preserving session error codes/state for the frontend bootstrap coordinator
+  - `/.env.example`
+    - documented `AUTH_SESSION_MAX_LIFETIME_SEC=10800`
+    - set compatibility TTL examples for normal / fast_access / admin to 10800 so deployment defaults align with the new policy
+  - `/tests/authSessionLifetime.test.ts`
+    - added regression coverage for:
+      - remaining hard lifetime
+      - fast-access TTL clamp
+      - session fingerprint stability across token refreshes
+      - hard expiry detection after three hours
+- TTL / Invalidation Rules Now Enforced:
+  - Maximum session lifetime:
+    - normal: hard max 3 hours
+    - fast_access: hard max 3 hours, or earlier if `temporaryAccessExpiresAt` ends first
+    - admin: hard max 3 hours
+  - Lifetime anchor:
+    - Firebase `auth_time` is authoritative
+    - silent token refreshes do not reset the 3-hour window
+  - Invalidation:
+    - logout => `logging_out`
+    - hard expiry / expired Redis snapshot => `expired`
+    - mode mismatch / replaced / stale invalidation record => `invalid`
+    - switching auth lanes still invalidates sibling mode sessions for the same uid
+  - Startup recovery:
+    - recovery UI now represents a failed authoritative bootstrap path
+    - valid sessions no longer enter the platform on a speculative pending-Firebase-only state and then later panic into recovery
+- Verification:
+  - Passed:
+    - `node_modules\.bin\tsx.cmd --test tests\authSessionLifetime.test.ts tests\authSessionScoping.test.ts`
+    - `node_modules\.bin\tsx.cmd --test tests\authSessionScoping.test.ts tests\modelRouting.test.ts`
+  - Typecheck status:
+    - `npm run lint 2>&1 | Select-Object -First 80`
+      - still reports unrelated pre-existing TypeScript errors in:
+        - `server/adminAccountDirectoryService.ts`
+        - `src/admin/components/CommunicationCenter.tsx`
+        - `src/App.tsx`
+        - `src/components/status/ResultPreviewContent.tsx`
+        - `src/services/emailDeliveryService.ts`
+        - `src/utils/exporters.ts`
+    - filtered lint output for the files changed in this auth/startup pass produced no matching errors before completion
+- Notes:
+  - Preserved:
+    - working branding
+    - existing route map
+    - admin-only routing boundaries
+    - fast-access route restrictions
+    - backend authorization boundaries
+  - This fix intentionally does not hide real failures by simply extending the old watchdog screen. It changes the startup authority model so recovery only appears when the canonical bootstrap transaction actually fails.
+
+[2026-03-28]
+- Area: Deployment Preparation / Firebase Hosting + Cloud Run
+- Files: /cloudbuild.yaml, /.gcloudignore, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Aligned the existing deployment contracts to the simplest safe split deployment model: Firebase Hosting serves the Vite frontend, while Cloud Run serves the Express backend behind Hosting rewrites.
+- Reason: The repo was already structurally compatible with this deployment model, so only small contract-hardening changes were needed to prevent config drift and accidental secret/artifact upload during Cloud Run source deployments.
+- Technical Details:
+  - Updated `cloudbuild.yaml` so the deployed Cloud Run service name is `zootopia-api`, matching the existing Firebase Hosting `/api/**` rewrite target in `firebase.json` and the current Hosting + Cloud Run deployment guide.
+  - Added `.gcloudignore` to keep Cloud Run source uploads smaller and safer by excluding local-only artifacts such as `node_modules`, `.venv`, build output, archives, logs, `.env`, and `serviceAccountKey.json`.
+  - Verified the existing deployment shape remained correct without broader edits:
+    - frontend build output stays `dist` (Vite default and current Firebase Hosting public dir)
+    - backend entry remains `server.ts`
+    - backend already binds `process.env.PORT` on `0.0.0.0`
+    - current frontend API usage is already same-origin `/api/*`, which is compatible with Firebase Hosting rewrites
+    - current Cloud Run path is safest through the existing `Dockerfile` because the backend runtime intentionally depends on Node 22, Python 3.11, `tsx`, and Vite/devDependencies during startup/build
+- Risks / Dependencies:
+  - Firebase Hosting rewrites still depend on the deployed Cloud Run service existing in `us-central1` with the service name `zootopia-api`.
+  - Cloud Run production runtime still expects environment variables/secrets to be supplied externally; `APP_URL` should point to the Firebase Hosting origin or custom domain in production.
+  - The backend still contains production static-file serving for compatibility, but this was intentionally preserved because Firebase Hosting will own frontend delivery in the target deployment shape.
+- Notes:
+  - Preserved the current repo layout, `server.ts` entrypoint, `src/features/*` ownership, document runtime structure, route contracts, and compatibility bridge files.
+  - Chose the least-complexity safe option: keep the existing Docker-backed Cloud Run runtime for backend correctness, and let Firebase Hosting serve the already-correct `dist` output with `/api/**` rewrites.
+  - Follow-up deployment commands:
+    - backend: `gcloud run deploy zootopia-api --source . --region us-central1 --allow-unauthenticated`
+    - frontend: `npm run build` then `npx -y firebase-tools@latest deploy --only hosting`
+
+[2026-03-28]
+- Area: Deployment Preparation / Build Context Safety Follow-up
+- Files: /.dockerignore, /.gcloudignore, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Finished the deployment-prep pass by aligning Docker and `gcloud` ignore rules so local secrets and non-runtime artifacts stay out of Cloud Run build contexts.
+- Reason: The initial deployment-preparation pass aligned service naming, but Docker context exclusions still needed to match the safer source-upload exclusions already introduced for Cloud Run.
+- Technical Details:
+  - Added `serviceAccountKey.json`, `*.zip`, and `*.tar` exclusions to `.dockerignore` so the existing backend image contract cannot accidentally package the local Firebase Admin key or large local archives.
+  - Expanded `.gcloudignore` to exclude `runtime/`, `build/`, `coverage/`, `*.tmp`, and all `.env.*` files while keeping `.env.example` available as the checked-in template.
+  - Preserved the current Docker-based Cloud Run runtime shape and did not alter `Dockerfile`, backend entrypoints, or API behavior.
+- Risks / Dependencies:
+  - Cloud Run source deploys still depend on the repo `Dockerfile`; these ignore rules only narrow the uploaded/build context and do not replace runtime configuration.
+  - Local development can still use `serviceAccountKey.json`; the ignore change only prevents it from entering deployment artifacts.
+- Notes:
+  - This is a deployment-safety follow-up only. No frontend routing, backend routes, or feature/module ownership changed.
+
+[2026-03-28]
+- Area: Cloud Run Docker Build / Python Runtime Stability
+- Files: /Dockerfile, /.dockerignore, /.gcloudignore, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Fixed the Cloud Run source-build failure by removing fragile version-interpolated Python package installs from the Dockerfile and aligning build-context ignores with the Python document-runtime workflow.
+- Reason: Cloud Build was failing during `apt-get install` because `PYTHON_VERSION` was declared before `FROM` and therefore was not safely available inside the active build stage, causing package names like `python${PYTHON_VERSION}` to collapse incorrectly. The safest repo-specific fix was to install Debian bookworm's stable `python3` packages directly while preserving the existing Python 3.11 runtime contract and repo-local virtualenv execution path.
+- Technical Details:
+  - Updated `Dockerfile` to install `python3`, `python3-pip`, and `python3-venv` instead of `python${PYTHON_VERSION}`/`python${PYTHON_VERSION}-venv`, removing the stage-ARG expansion failure point during Cloud Run Docker builds.
+  - Kept the backend document runtime contract intact by preserving `DOCUMENT_RUNTIME_PYTHON_EXECUTABLE=/app/.venv/bin/python` and continuing to create/install the repo-local `.venv` before the existing deployment verification and frontend build steps.
+  - Preserved the current native dependency layer (`build-essential`, `libgomp1`, `libglib2.0-0`, `libgl1`, `ca-certificates`) because the current backend image still needs Node native builds and Python OCR/document packages.
+  - Added Python cache exclusions (`__pycache__/`, `*.py[cod]`) to both `.dockerignore` and `.gcloudignore` so local Python artifacts do not pollute Docker or Cloud Run source build contexts.
+- Risks / Dependencies:
+  - This fix assumes the existing `node:22-bookworm-slim` base remains on Debian bookworm, where the stable `python3` packages resolve to the project's intended Python 3.11 line.
+  - The authoritative Python-version contract is still carried by `deployment/runtime-manifest.json`, `.python-version`, and the venv runtime path; the Dockerfile change intentionally avoids altering those contracts.
+  - Python package install/runtime behavior still depends on the pinned extraction stack in `server/documentRuntime/python/requirements.txt` and any first-run model asset downloads those libraries may perform outside the image build.
+- Notes:
+  - Preserved the current Cloud Run + Firebase Hosting deployment model, `server.ts` backend entry, `/api/*` route shape, document runtime wiring, and backend worker invocation flow.
+  - Chose the least-complexity safe fix for this repo: repair the Docker installation layer without introducing deployment redesigns, backend logic changes, or broader refactors.
+
+[2026-03-28]
+- Area: Cloud Run Credentials / Temporary Service Account Inclusion / Runtime Env Workflow
+- Files: /Dockerfile, /.dockerignore, /.gcloudignore, /.gitignore, /server.ts, /cloudrun.env, /DEPLOYMENT.md, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Formalized a temporary, explicit Cloud Run deployment path that allows the repo-root `serviceAccountKey.json` to be bundled into the backend image on purpose, while making `cloudrun.env` the canonical local env-vars file for Cloud Run deploy/update commands.
+- Reason: The backend already knew how to read a bundled `serviceAccountKey.json`, but the current deployment story was ambiguous: there was no explicit `cloudrun.env` workflow, no env-first credential path for Cloud Run, and no clear documentation that this is a temporary security-sensitive exception rather than a normal long-term credential strategy.
+- Technical Details:
+  - Hardened Firebase Admin initialization in `server.ts` so it now resolves credentials from `GOOGLE_APPLICATION_CREDENTIALS` first, then falls back to the bundled repo-root `serviceAccountKey.json`, and finally falls back to Application Default Credentials if no file is resolved.
+  - Added explicit warning logs in `server.ts` when the bundled `serviceAccountKey.json` path is used, documenting that this is a temporary Cloud Run convenience path that should later move to Secret Manager or attached runtime credentials.
+  - Added a Dockerfile comment at `COPY . .` documenting that the temporary credential file lands at `/app/serviceAccountKey.json` inside the shared Cloud Run image and should later be removed in favor of a safer credential source.
+  - Updated `.dockerignore` and `.gcloudignore` comments to make the temporary `serviceAccountKey.json` allowance explicit, while adding `cloudrun.env` to both ignore files so the local env-vars file is used by `gcloud --env-vars-file` but is not copied into the image or uploaded as source.
+  - Added `cloudrun.env` and `serviceAccountKey.json` to `.gitignore` so the temporary local deployment inputs stay out of Git even though Cloud Run is intentionally allowed to consume the key file from the local workspace.
+  - Normalized `cloudrun.env` as the canonical local Cloud Run env file with production `NODE_ENV`, explicit `GOOGLE_APPLICATION_CREDENTIALS=/app/serviceAccountKey.json`, explicit Python worker path, and the Hosting-domain-style `APP_URL`.
+  - Documented the exact `gcloud run deploy` / `gcloud run services update` commands and the temporary bundled-key workflow in `DEPLOYMENT.md`.
+- Risks / Dependencies:
+  - This intentionally allows a raw Firebase Admin JSON key to enter the Cloud Run source/image path temporarily; that is security-sensitive and should remain a short-lived exception.
+  - The bundled key path depends on the repo-root `serviceAccountKey.json` surviving both `.gcloudignore` and `.dockerignore` and then being copied to `/app/serviceAccountKey.json` by `COPY . .` in the existing Dockerfile.
+  - `cloudrun.env` is now a local secret-bearing deployment input and env updates applied with `--env-vars-file` replace the service env set defined by that file.
+- Notes:
+  - Preserved the current Firebase Hosting + Cloud Run architecture, `server.ts` backend startup contract, Express routes, document runtime layout, Docker-based Cloud Run build path, and shared `/api/*` shape.
+  - Did not redesign credential handling into a new subsystem; this is an additive env-first resolution path on top of the existing bundled-file fallback.
+  - Later secure migration path: move Firebase Admin auth to the attached Cloud Run service account (Application Default Credentials) or Secret Manager / mounted secret file, then remove the bundled `serviceAccountKey.json` path and the related ignore-file exception comments.

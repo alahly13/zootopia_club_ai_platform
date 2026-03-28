@@ -82,6 +82,12 @@ function getRetryDelay(retryCount: number) {
   return 1500 * (retryCount + 1);
 }
 
+function waitForRetryDelay(delayMs: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, delayMs);
+  });
+}
+
 async function getAuthHeaders(firebaseUser: FirebaseUser) {
   const token = await firebaseUser.getIdToken();
   return {
@@ -118,7 +124,6 @@ async function fetchJsonWithTimeout(
 }
 
 export function useAuthActions(
-  setUser: React.Dispatch<React.SetStateAction<User | null>>,
   logActivity: (
     type: Activity['type'],
     description: string,
@@ -142,8 +147,15 @@ export function useAuthActions(
    * not security boundaries and cannot replace backend authorization.
    */
   const syncUserWithFirestore = useCallback(
-    async (firebaseUser: FirebaseUser, retryCount = 0) => {
+    async (firebaseUser: FirebaseUser, retryCount = 0): Promise<User> => {
       try {
+        logger.info('Workspace profile sync begin', {
+          area: 'auth',
+          event: 'auth-profile-sync-begin',
+          currentUserId: firebaseUser.uid,
+          retryCount,
+        });
+
         const userDocRef = doc(db, 'users', firebaseUser.uid);
         const docSnap = await getDoc(userDocRef);
         const today = new Date().toISOString().split('T')[0];
@@ -270,7 +282,6 @@ export function useAuthActions(
 
           await updateDoc(userDocRef, cleanObject(updates));
           const finalUser = { ...existingUser, ...updates };
-          setUser(finalUser);
 
           if (
             finalUser.status === STATUS.ACTIVE &&
@@ -306,6 +317,21 @@ export function useAuthActions(
               }),
             }).catch((e) => logger.error('Failed to notify admin of verification:', e));
           }
+
+          logger.info('Workspace profile sync completed', {
+            area: 'auth',
+            event: 'auth-profile-sync-completed',
+            currentUserId: firebaseUser.uid,
+            role: finalUser.role,
+            status: finalUser.status,
+            modeHint:
+              finalUser.isTemporaryAccess === true
+                ? 'fast_access'
+                : finalUser.role === 'Admin'
+                  ? 'admin'
+                  : 'normal',
+          });
+          return finalUser;
         } else {
           const newUser: User = {
             id: firebaseUser.uid,
@@ -355,7 +381,6 @@ export function useAuthActions(
           };
 
           await setDoc(userDocRef, cleanObject(newUser));
-          setUser(newUser);
 
           logActivity(
             'login',
@@ -377,6 +402,16 @@ export function useAuthActions(
               }),
             }).catch((e) => logger.error('Failed to notify admin of new registration:', e));
           }
+
+          logger.info('Workspace profile sync completed', {
+            area: 'auth',
+            event: 'auth-profile-sync-completed',
+            currentUserId: firebaseUser.uid,
+            role: newUser.role,
+            status: newUser.status,
+            modeHint: newUser.role === 'Admin' ? 'admin' : 'normal',
+          });
+          return newUser;
         }
       } catch (error: any) {
         const isConnectionError =
@@ -384,28 +419,30 @@ export function useAuthActions(
 
         if (isConnectionError && retryCount < 3) {
           logger.warn(`Firestore unavailable, retrying sync (${retryCount + 1}/3)...`);
-          setTimeout(() => syncUserWithFirestore(firebaseUser, retryCount + 1), getRetryDelay(retryCount));
-          return;
+          await waitForRetryDelay(getRetryDelay(retryCount));
+          return syncUserWithFirestore(firebaseUser, retryCount + 1);
         }
 
         logger.error('Error syncing user with Firestore', { error });
 
         if (!isConnectionError && error?.code !== 'invalid-argument' && retryCount < 2) {
-          setTimeout(() => syncUserWithFirestore(firebaseUser, retryCount + 1), 1000);
-          return;
+          await waitForRetryDelay(1_000);
+          return syncUserWithFirestore(firebaseUser, retryCount + 1);
         }
 
         if (!isConnectionError) {
           toast.error('Authentication sync failed. Please refresh and try again.');
         }
+
+        throw error instanceof Error ? error : new Error('Authentication sync failed.');
       }
     },
-    [setUser, logActivity]
+    [logActivity, notify]
   );
 
   const login = useCallback(async (firebaseUser: FirebaseUser) => {
-    await syncUserWithFirestore(firebaseUser);
-  }, [syncUserWithFirestore]);
+    return firebaseUser;
+  }, []);
 
   const loginWithIdentifier = useCallback(async (identifier: string, password: string) => {
     try {
@@ -436,7 +473,7 @@ export function useAuthActions(
       }
 
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
-      await syncUserWithFirestore(userCredential.user);
+      return userCredential.user;
     } catch (error: any) {
       logger.error('Login error', { error });
 
@@ -448,7 +485,7 @@ export function useAuthActions(
 
       throw new Error(friendlyMessage);
     }
-  }, [syncUserWithFirestore]);
+  }, []);
 
   const sendVerificationEmailSafe = useCallback(async (firebaseUser: FirebaseUser) => {
     try {
@@ -634,7 +671,7 @@ export function useAuthActions(
     }
   }, [checkUsernameAvailability, sendVerificationEmailSafe, logActivity]);
 
-  const adminLogin = useCallback(async (identifier: string, password: string) => {
+  const adminLogin = useCallback(async (identifier: string, password: string): Promise<FirebaseUser> => {
     try {
       let email = identifier;
 
@@ -668,9 +705,7 @@ export function useAuthActions(
       }
 
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
-      await syncUserWithFirestore(userCredential.user);
-      toast.success(`Admin login successful: ${adminIdentity.role}`);
-      return true;
+      return userCredential.user;
     } catch (error: any) {
       logger.error('Admin login failed', { error });
 
@@ -680,10 +715,9 @@ export function useAuthActions(
       if (error.code === 'auth/invalid-email') friendlyMessage = 'Invalid email format.';
       if (error.code === 'auth/network-request-failed') friendlyMessage = 'Network error. Please check your connection.';
 
-      notify.error(`Admin authentication failed: ${friendlyMessage}`);
-      return false;
+      throw new Error(friendlyMessage);
     }
-  }, [syncUserWithFirestore, notify]);
+  }, []);
 
   const logout = useCallback(async () => {
     try {

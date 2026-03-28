@@ -32,6 +32,7 @@ import { CommunicationService } from './server/communicationService';
 import { CodeService } from './server/codeService';
 import { createTraceId, logDiagnostic, normalizeError } from './server/diagnostics';
 import {
+  AuthSessionError,
   PlatformAuthType,
   authSessionService,
   resolvePlatformAuthType,
@@ -111,20 +112,47 @@ async function startServer() {
     },
   });
 
-  // Initialize Firebase Admin
-  const serviceAccountPath = path.join(__dirname, "serviceAccountKey.json");
-  if (fs.existsSync(serviceAccountPath)) {
+  // Temporary deployment escape hatch: keep the bundled-key path explicit while
+  // also honoring ADC-compatible `GOOGLE_APPLICATION_CREDENTIALS` so this can
+  // later move to Secret Manager or attached Cloud Run credentials cleanly.
+  const normalizeCredentialPath = (value: unknown): string | undefined => {
+    if (typeof value !== 'string') return undefined;
+    const normalized = value.trim();
+    return normalized || undefined;
+  };
+  const bundledServiceAccountPath = path.join(__dirname, "serviceAccountKey.json");
+  const configuredServiceAccountPath = normalizeCredentialPath(process.env.GOOGLE_APPLICATION_CREDENTIALS);
+  const serviceAccountPath =
+    (configuredServiceAccountPath && fs.existsSync(configuredServiceAccountPath)
+      ? configuredServiceAccountPath
+      : undefined) ||
+    (fs.existsSync(bundledServiceAccountPath) ? bundledServiceAccountPath : undefined);
+
+  if (configuredServiceAccountPath && configuredServiceAccountPath !== serviceAccountPath) {
+    console.warn(
+      `GOOGLE_APPLICATION_CREDENTIALS points to ${configuredServiceAccountPath}, but that file was not found. Falling back to bundled serviceAccountKey.json or default credentials.`
+    );
+  }
+
+  if (serviceAccountPath) {
     try {
       const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, "utf8"));
       admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
       });
-      console.log("Firebase Admin initialized successfully with service account");
+      if (path.resolve(serviceAccountPath) === path.resolve(bundledServiceAccountPath)) {
+        console.warn(
+          "Firebase Admin is using the bundled serviceAccountKey.json file. This is a temporary Cloud Run convenience path and should be replaced with Secret Manager or attached runtime credentials."
+        );
+      }
+      console.log(`Firebase Admin initialized successfully with service account file: ${serviceAccountPath}`);
     } catch (error) {
       console.error("Error initializing Firebase Admin with service account:", error);
     }
   } else {
-    console.warn("serviceAccountKey.json not found. Attempting to initialize with default credentials.");
+    console.warn(
+      "No Firebase Admin service account file was resolved from GOOGLE_APPLICATION_CREDENTIALS or serviceAccountKey.json. Attempting to initialize with default credentials."
+    );
     try {
       admin.initializeApp();
       console.log("Firebase Admin initialized successfully with default credentials");
@@ -1084,6 +1112,27 @@ const buildSessionBootstrapInput = (params: {
   };
 };
 
+const sendAuthSessionError = (
+  res: express.Response,
+  error: unknown,
+  fallbackMessage: string
+) => {
+  if (error instanceof AuthSessionError) {
+    return res.status(error.statusCode).json({
+      success: false,
+      error: error.message,
+      code: error.code,
+      sessionState: error.session?.sessionState || null,
+    });
+  }
+
+  return res.status(401).json({
+    success: false,
+    error: fallbackMessage,
+    details: normalizeError(error),
+  });
+};
+
 const isPrimaryAdmin = (userContext: any): boolean => {
   return userContext?.adminLevel === 'primary';
 };
@@ -1679,11 +1728,7 @@ const logAdminUserAction = async (
         },
       });
     } catch (error) {
-      return res.status(401).json({
-        success: false,
-        error: 'Failed to bootstrap session.',
-        details: normalizeError(error),
-      });
+      return sendAuthSessionError(res, error, 'Failed to bootstrap session.');
     }
   });
 
@@ -1716,11 +1761,7 @@ const logAdminUserAction = async (
         },
       });
     } catch (error) {
-      return res.status(401).json({
-        success: false,
-        error: 'Failed to refresh session.',
-        details: normalizeError(error),
-      });
+      return sendAuthSessionError(res, error, 'Failed to refresh session.');
     }
   });
 
@@ -1756,11 +1797,7 @@ const logAdminUserAction = async (
         },
       });
     } catch (error) {
-      return res.status(401).json({
-        success: false,
-        error: 'Failed to invalidate session.',
-        details: normalizeError(error),
-      });
+      return sendAuthSessionError(res, error, 'Failed to invalidate session.');
     }
   });
 

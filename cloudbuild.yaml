@@ -2,7 +2,9 @@
 # Python extraction worker stays coupled to the Node service intentionally.
 substitutions:
   _IMAGE_URI: us-central1-docker.pkg.dev/$PROJECT_ID/zootopia-club-ai/zootopia-club-ai
-  _SERVICE_NAME: zootopia-club-ai
+  # Keep the Cloud Run service name aligned with firebase.json rewrites so
+  # Hosting can proxy /api/** without an extra translation layer.
+  _SERVICE_NAME: zootopia-api
   _REGION: us-central1
 
 steps:

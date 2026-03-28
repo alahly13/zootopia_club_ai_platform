@@ -1,0 +1,26 @@
+# Keep Cloud Run source uploads lean, but preserve the temporary explicit
+# exception that allows `serviceAccountKey.json` into the source bundle so the
+# backend can still resolve `/app/serviceAccountKey.json` in Cloud Run.
+.git
+.gitignore
+.github/
+.agents/
+.venv/
+node_modules/
+dist/
+runtime/
+build/
+coverage/
+.env
+.env.*
+!.env.example
+# `cloudrun.env` is a local deploy/update input for `gcloud --env-vars-file`;
+# keep it out of uploaded source and the final image.
+
+*.log
+*.tmp
+__pycache__/
+*.py[cod]
+*.zip
+*.tar
+backup data.txt

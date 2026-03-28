@@ -2,12 +2,24 @@ node_modules
 dist
 runtime
 .venv
+# Temporary security-sensitive exception: `serviceAccountKey.json` is
+# intentionally not ignored so Cloud Run source builds can bundle
+# `/app/serviceAccountKey.json` for the current Firebase Admin fallback path.
+# Remove that allowance after migrating to Secret Manager or attached runtime
+# credentials.
 .env
 .env.*
 !.env.example
+# `cloudrun.env` is consumed locally by `gcloud --env-vars-file` and should not
+# be copied into the runtime image.
+
 build
 coverage
 *.log
 *.tmp
+__pycache__/
+*.py[cod]
 .git
 .gitignore
+*.zip
+*.tar

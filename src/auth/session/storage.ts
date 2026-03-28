@@ -16,6 +16,27 @@ function buildSessionStorageKey(authType: AuthSessionType) {
   return `${AUTH_SESSION_STORAGE_PREFIX}:${authType}`;
 }
 
+function isStoredSessionUsable(authType: AuthSessionType, session: AuthSessionState | null): session is AuthSessionState {
+  if (!session || session.authType !== authType) {
+    return false;
+  }
+
+  if (session.sessionState === 'invalid' || session.sessionState === 'expired' || session.sessionState === 'logging_out') {
+    return false;
+  }
+
+  if (!session.expiresAt) {
+    return true;
+  }
+
+  const expiresAtMs = new Date(session.expiresAt).getTime();
+  if (!Number.isFinite(expiresAtMs)) {
+    return false;
+  }
+
+  return expiresAtMs > Date.now();
+}
+
 function safeParseSession(raw: string | null): AuthSessionState | null {
   if (!raw) {
     return null;
@@ -35,7 +56,13 @@ export function clearLegacyAuthSessionKeys(): void {
 export function readStoredAuthSessionMode(): AuthSessionType | null {
   const raw = safeLocalStorageGetItem(AUTH_SESSION_CURRENT_MODE_KEY);
   if (raw === 'normal' || raw === 'fast_access' || raw === 'admin') {
-    return raw;
+    const storedSession = safeParseSession(safeLocalStorageGetItem(buildSessionStorageKey(raw)));
+    if (isStoredSessionUsable(raw, storedSession)) {
+      return raw;
+    }
+
+    clearStoredAuthSession(raw);
+    clearStoredAuthSessionMode();
   }
 
   return null;
@@ -50,7 +77,13 @@ export function clearStoredAuthSessionMode(): void {
 }
 
 export function readStoredAuthSession(authType: AuthSessionType): AuthSessionState | null {
-  return safeParseSession(safeLocalStorageGetItem(buildSessionStorageKey(authType)));
+  const storedSession = safeParseSession(safeLocalStorageGetItem(buildSessionStorageKey(authType)));
+  if (!isStoredSessionUsable(authType, storedSession)) {
+    clearStoredAuthSession(authType);
+    return null;
+  }
+
+  return storedSession;
 }
 
 export function writeStoredAuthSession(authType: AuthSessionType, session: AuthSessionState): void {

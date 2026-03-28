@@ -21,6 +21,13 @@ export type AuthSessionVerificationStatus =
   | 'expired'
   | 'mode_mismatch';
 
+export type AuthSessionErrorCode =
+  | 'SESSION_INVALIDATED'
+  | 'SESSION_MISSING'
+  | 'SESSION_EXPIRED'
+  | 'SESSION_MAX_LIFETIME_EXCEEDED'
+  | 'AUTH_MODE_MISMATCH';
+
 type AuthSessionRehydrationStatus = AuthSessionSnapshot['rehydrationStatus'];
 type AuthSessionReEntryStatus = AuthSessionSnapshot['reEntryStatus'];
 
@@ -107,20 +114,45 @@ type AuthSessionValidationResult =
       session?: AuthSessionSnapshot | null;
     };
 
+export class AuthSessionError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode: number,
+    public readonly code: AuthSessionErrorCode,
+    public readonly session: AuthSessionSnapshot | null = null
+  ) {
+    super(message);
+    this.name = 'AuthSessionError';
+  }
+}
+
 const AUTH_SESSION_SCHEMA_VERSION = '2026-03-auth-session-v1';
 const AUTH_SESSION_REDIS_URL = process.env.REDIS_URL?.trim() || '';
 const AUTH_SESSION_REDIS_KEY_PREFIX =
   process.env.AUTH_SESSION_REDIS_KEY_PREFIX?.trim() || 'zootopia:auth';
+const AUTH_SESSION_MAX_LIFETIME_SEC = Number.parseInt(
+  process.env.AUTH_SESSION_MAX_LIFETIME_SEC || '10800',
+  10
+);
+export const AUTH_SESSION_HARD_MAX_LIFETIME_SEC = AUTH_SESSION_MAX_LIFETIME_SEC;
+const resolveConfiguredSessionTtlSec = (envValue: string | undefined): number => {
+  const parsed = Number.parseInt(envValue || '', 10);
+  const candidate = Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : AUTH_SESSION_MAX_LIFETIME_SEC;
+
+  return Math.max(1, Math.min(candidate, AUTH_SESSION_MAX_LIFETIME_SEC));
+};
 const AUTH_SESSION_NORMAL_TTL_SEC = Number.parseInt(
-  process.env.AUTH_SESSION_NORMAL_TTL_SEC || '43200',
+  String(resolveConfiguredSessionTtlSec(process.env.AUTH_SESSION_NORMAL_TTL_SEC)),
   10
 );
 const AUTH_SESSION_FAST_ACCESS_TTL_SEC = Number.parseInt(
-  process.env.AUTH_SESSION_FAST_ACCESS_TTL_SEC || '21600',
+  String(resolveConfiguredSessionTtlSec(process.env.AUTH_SESSION_FAST_ACCESS_TTL_SEC)),
   10
 );
 const AUTH_SESSION_ADMIN_TTL_SEC = Number.parseInt(
-  process.env.AUTH_SESSION_ADMIN_TTL_SEC || '7200',
+  String(resolveConfiguredSessionTtlSec(process.env.AUTH_SESSION_ADMIN_TTL_SEC)),
   10
 );
 const AUTH_SESSION_INVALIDATION_TTL_SEC = Number.parseInt(
@@ -155,26 +187,59 @@ function normalizeAuthProviders(userData: Record<string, unknown>): string[] {
   );
 }
 
-function resolveSessionTtlSec(authType: PlatformAuthType, userData: Record<string, unknown>): number {
+function resolveTokenAuthTimeSec(
+  decodedToken: Pick<AuthSessionBootstrapInput['decodedToken'], 'auth_time' | 'iat'>,
+  nowMs: number = Date.now()
+): number {
+  const authTimeSec = Number(decodedToken.auth_time || decodedToken.iat || 0);
+  if (Number.isFinite(authTimeSec) && authTimeSec > 0) {
+    return authTimeSec;
+  }
+
+  return Math.floor(nowMs / 1000);
+}
+
+export function resolveRemainingSessionLifetimeSec(
+  decodedToken: Pick<AuthSessionBootstrapInput['decodedToken'], 'auth_time' | 'iat'>,
+  nowMs: number = Date.now()
+): number {
+  const authTimeSec = resolveTokenAuthTimeSec(decodedToken, nowMs);
+  const elapsedSec = Math.max(0, Math.floor(nowMs / 1000) - authTimeSec);
+  return Math.max(0, AUTH_SESSION_MAX_LIFETIME_SEC - elapsedSec);
+}
+
+export function hasSessionExceededMaximumLifetime(
+  decodedToken: Pick<AuthSessionBootstrapInput['decodedToken'], 'auth_time' | 'iat'>,
+  nowMs: number = Date.now()
+): boolean {
+  return resolveRemainingSessionLifetimeSec(decodedToken, nowMs) <= 0;
+}
+
+export function resolveSessionTtlSec(
+  authType: PlatformAuthType,
+  userData: Record<string, unknown>,
+  decodedToken: Pick<AuthSessionBootstrapInput['decodedToken'], 'auth_time' | 'iat'>
+): number {
   const baseTtlSec =
     authType === 'admin'
       ? AUTH_SESSION_ADMIN_TTL_SEC
       : authType === 'fast_access'
         ? AUTH_SESSION_FAST_ACCESS_TTL_SEC
         : AUTH_SESSION_NORMAL_TTL_SEC;
+  const hardLifetimeRemainingSec = resolveRemainingSessionLifetimeSec(decodedToken);
 
   if (authType !== 'fast_access') {
-    return baseTtlSec;
+    return Math.max(1, Math.min(baseTtlSec, hardLifetimeRemainingSec));
   }
 
   const temporaryAccessExpiresAt = normalizeOptionalString(userData.temporaryAccessExpiresAt);
   if (!temporaryAccessExpiresAt) {
-    return baseTtlSec;
+    return Math.max(1, Math.min(baseTtlSec, hardLifetimeRemainingSec));
   }
 
   const expiresAtMs = new Date(temporaryAccessExpiresAt).getTime();
   if (!Number.isFinite(expiresAtMs)) {
-    return baseTtlSec;
+    return Math.max(1, Math.min(baseTtlSec, hardLifetimeRemainingSec));
   }
 
   const remainingMs = expiresAtMs - Date.now();
@@ -182,7 +247,10 @@ function resolveSessionTtlSec(authType: PlatformAuthType, userData: Record<strin
     return 1;
   }
 
-  return Math.max(1, Math.min(baseTtlSec, Math.floor(remainingMs / 1000)));
+  return Math.max(
+    1,
+    Math.min(baseTtlSec, Math.floor(remainingMs / 1000), hardLifetimeRemainingSec)
+  );
 }
 
 function resolveAccountCompletenessStatus(
@@ -314,11 +382,11 @@ function resolveLoginMethod(input: AuthSessionBootstrapInput): string {
   return provider || 'firebase_session';
 }
 
-function resolveSessionFingerprint(input: AuthSessionBootstrapInput): string {
+export function resolveSessionFingerprint(input: AuthSessionBootstrapInput): string {
   const provider = String(input.decodedToken.firebase?.sign_in_provider || '').trim().toLowerCase() || 'unknown';
-  const tokenIssuedAtSec = Number(input.decodedToken.iat || 0);
+  const authTimeSec = resolveTokenAuthTimeSec(input.decodedToken);
   const scope = normalizeOptionalString(input.userData.accountScope) || 'full_account';
-  return `${input.authType}:${input.decodedToken.uid}:${provider}:${scope}:${tokenIssuedAtSec}`;
+  return `${input.authType}:${input.decodedToken.uid}:${provider}:${scope}:${authTimeSec}`;
 }
 
 function buildAuthSessionNamespace(authType: PlatformAuthType, uid: string): string {
@@ -387,7 +455,7 @@ function createBaseSnapshot(input: AuthSessionBootstrapInput & {
     accountCompletenessStatus: resolveAccountCompletenessStatus(input.authType, input.userData),
     lastValidatedAt: nowIso,
     tokenIssuedAtSec: Number(input.decodedToken.iat || 0),
-    tokenAuthTimeSec: Number(input.decodedToken.auth_time || input.decodedToken.iat || 0),
+    tokenAuthTimeSec: resolveTokenAuthTimeSec(input.decodedToken),
   };
 }
 
@@ -399,6 +467,46 @@ const registry = new RedisBackedStoreRegistry({
 });
 
 export class AuthSessionService {
+  /**
+   * Hard session expiry is anchored to Firebase `auth_time`, not to silent ID
+   * token refreshes. Reloads and background refreshes must not extend a session
+   * beyond the 3-hour maximum lifetime.
+   */
+  private async ensureMaximumLifetimeNotExceeded(
+    input: AuthSessionBootstrapInput,
+    phase: 'bootstrap' | 'validate'
+  ): Promise<void> {
+    const remainingLifetimeSec = resolveRemainingSessionLifetimeSec(input.decodedToken);
+    if (remainingLifetimeSec > 0) {
+      return;
+    }
+
+    const expiredSession = await this.invalidateCurrentSession(
+      input.authType,
+      input.decodedToken.uid,
+      'session_max_lifetime_exceeded'
+    );
+
+    logDiagnostic('warn', 'auth.session.max_lifetime_exceeded', {
+      area: 'auth',
+      userId: input.decodedToken.uid,
+      stage: phase,
+      status: 'expired',
+      details: {
+        authType: input.authType,
+        authTimeSec: resolveTokenAuthTimeSec(input.decodedToken),
+        maxLifetimeSec: AUTH_SESSION_MAX_LIFETIME_SEC,
+      },
+    });
+
+    throw new AuthSessionError(
+      'Session expired. Please sign in again.',
+      401,
+      'SESSION_MAX_LIFETIME_EXCEEDED',
+      expiredSession
+    );
+  }
+
   private async invalidateSiblingSessions(
     authType: PlatformAuthType,
     uid: string,
@@ -528,7 +636,12 @@ export class AuthSessionService {
 
     const invalidated: AuthSessionSnapshot = {
       ...current,
-      sessionState: reason === 'logout' ? 'logging_out' : 'invalid',
+      sessionState:
+        reason === 'logout'
+          ? 'logging_out'
+          : reason.includes('expired')
+            ? 'expired'
+            : 'invalid',
       logoutReason: reason,
       refreshedAt: new Date().toISOString(),
       lastValidatedAt: new Date().toISOString(),
@@ -544,7 +657,10 @@ export class AuthSessionService {
 
   async bootstrapSession(input: AuthSessionBootstrapInput): Promise<AuthSessionSnapshot> {
     const traceId = createTraceId('auth-session');
-    const ttlSec = resolveSessionTtlSec(input.authType, input.userData);
+    await this.ensureMaximumLifetimeNotExceeded(input, 'bootstrap');
+
+    const ttlSec = resolveSessionTtlSec(input.authType, input.userData, input.decodedToken);
+    const remainingLifetimeSec = resolveRemainingSessionLifetimeSec(input.decodedToken);
     const sessionFingerprint = resolveSessionFingerprint(input);
     const existing = await this.readCurrentSession(input.authType, input.decodedToken.uid);
     const rehydrationStatus = resolveRehydrationStatus(input.source);
@@ -602,30 +718,29 @@ export class AuthSessionService {
             cacheHydrationStatus: existing ? 'hydrated' : 'cleared',
           });
 
-    await this.persistSession(
-      {
-        ...session,
-        expiresAt: new Date(Date.now() + ttlSec * 1000).toISOString(),
-      },
-      ttlSec
-    );
-
-    logDiagnostic('info', 'auth.session.bootstrap', {
-      area: 'auth',
-      userId: session.uid,
-      status: session.sessionState,
-      details: {
-        authType: session.authType,
-        modeMismatch: session.modeMismatch,
-        sessionSource: session.sessionSource,
-        cacheNamespace: session.cacheNamespace,
-      },
-    });
-
-    return {
+    const persistedSession: AuthSessionSnapshot = {
       ...session,
       expiresAt: new Date(Date.now() + ttlSec * 1000).toISOString(),
     };
+
+    await this.persistSession(persistedSession, ttlSec);
+
+    logDiagnostic('info', 'auth.session.bootstrap', {
+      area: 'auth',
+      userId: persistedSession.uid,
+      status: persistedSession.sessionState,
+      details: {
+        authType: persistedSession.authType,
+        modeMismatch: persistedSession.modeMismatch,
+        sessionSource: persistedSession.sessionSource,
+        cacheNamespace: persistedSession.cacheNamespace,
+        ttlSec,
+        remainingLifetimeSec,
+        expiresAt: persistedSession.expiresAt,
+      },
+    });
+
+    return persistedSession;
   }
 
   async refreshSession(input: AuthSessionBootstrapInput): Promise<AuthSessionSnapshot> {
@@ -636,6 +751,22 @@ export class AuthSessionService {
   }
 
   async validateSession(input: AuthSessionValidationInput): Promise<AuthSessionValidationResult> {
+    try {
+      await this.ensureMaximumLifetimeNotExceeded(input, 'validate');
+    } catch (error) {
+      if (error instanceof AuthSessionError) {
+        return {
+          ok: false,
+          statusCode: error.statusCode,
+          error: error.message,
+          code: error.code,
+          session: error.session,
+        };
+      }
+
+      throw error;
+    }
+
     const invalidation = await this.readInvalidationRecord(input.authType, input.decodedToken.uid);
     const tokenIssuedAtSec = Number(input.decodedToken.iat || 0);
 
@@ -707,7 +838,7 @@ export class AuthSessionService {
       Date.now() - lastActivityAtMs >= ACTIVITY_TOUCH_INTERVAL_MS;
 
     if (shouldTouchActivity) {
-      const ttlSec = resolveSessionTtlSec(input.authType, input.userData);
+      const ttlSec = resolveSessionTtlSec(input.authType, input.userData, input.decodedToken);
       const touched: AuthSessionSnapshot = {
         ...current,
         lastActivityAt: new Date().toISOString(),

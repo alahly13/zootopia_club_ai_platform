@@ -24,6 +24,7 @@ import { AIModel } from '../constants/aiModels';
 import { logger } from '../utils/logger';
 import { useNotification } from '../hooks/useNotification';
 import { auth } from '../firebase';
+import { withTimeout } from '../utils/async';
 import {
   onAuthStateChanged,
   User as FirebaseUser,
@@ -54,6 +55,7 @@ import {
 } from './session/authMode';
 import {
   bootstrapPlatformAuthSession,
+  isAuthSessionApiError,
   logoutPlatformAuthSession,
   refreshPlatformAuthSession,
 } from './session/sessionApi';
@@ -78,6 +80,26 @@ import {
  * 4. Preserve all public context contracts unless absolutely necessary.
  * 5. Build incrementally on top of this structure.
  */
+
+type AuthBootstrapState =
+  | 'bootstrapping'
+  | 'restoring'
+  | 'validating'
+  | 'hydrating_profile'
+  | 'authenticated'
+  | 'unauthenticated'
+  | 'expired'
+  | 'invalid'
+  | 'failed'
+  | 'logging_out';
+
+type AuthBootstrapIssue = {
+  title: string;
+  message: string;
+  detail?: string;
+  reason: string;
+  phase: AuthBootstrapState;
+};
 
 interface AuthContextType {
   user: User | null;
@@ -111,12 +133,8 @@ interface AuthContextType {
   isAdmin: boolean;
   isAuthReady: boolean;
   isProfileHydrating: boolean;
-  authBootstrapState: 'restoring' | 'syncing_profile' | 'ready' | 'recoverable_error';
-  authBootstrapIssue: {
-    title: string;
-    message: string;
-    detail?: string;
-  } | null;
+  authBootstrapState: AuthBootstrapState;
+  authBootstrapIssue: AuthBootstrapIssue | null;
   retryAuthBootstrap: () => Promise<void>;
   clearStalledAuthSession: () => Promise<void>;
 
@@ -204,9 +222,26 @@ interface AuthContextType {
   updateUserCredits: (userId: string, credits: number) => Promise<void>;
 }
 
-const INITIAL_AUTH_RESOLUTION_TIMEOUT_MS = 8_000;
-const AUTH_PROFILE_SYNC_TIMEOUT_MS = 10_000;
+const INITIAL_AUTH_RESOLUTION_TIMEOUT_MS = 15_000;
+const AUTH_PROFILE_SYNC_TIMEOUT_MS = 12_000;
 const AUTH_SESSION_REENTRY_REFRESH_INTERVAL_MS = 5 * 60_000;
+
+function isStoredAuthSessionStillRestorable(session: AuthSessionState | null): session is AuthSessionState {
+  if (!session) {
+    return false;
+  }
+
+  if (!session.expiresAt) {
+    return true;
+  }
+
+  const expiresAtMs = new Date(session.expiresAt).getTime();
+  if (!Number.isFinite(expiresAtMs)) {
+    return true;
+  }
+
+  return expiresAtMs > Date.now();
+}
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 AuthContext.displayName = 'AuthContext';
@@ -217,7 +252,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
    */
   const [user, setUser] = useState<User | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
-  const [authBootstrapState, setAuthBootstrapState] = useState<AuthContextType['authBootstrapState']>('restoring');
+  const [authBootstrapState, setAuthBootstrapState] = useState<AuthContextType['authBootstrapState']>('bootstrapping');
   const [authBootstrapIssue, setAuthBootstrapIssue] = useState<AuthContextType['authBootstrapIssue']>(null);
   const [pendingFirebaseSession, setPendingFirebaseSession] = useState<{
     uid: string;
@@ -227,7 +262,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const storedAuthMode = readStoredAuthSessionMode();
     const storedSession = storedAuthMode ? getAuthSessionManager(storedAuthMode).load() : null;
 
-    if (!storedSession) {
+    if (!isStoredAuthSessionStillRestorable(storedSession)) {
+      if (storedAuthMode) {
+        getAuthSessionManager(storedAuthMode).clear();
+        clearStoredAuthSessionMode();
+      }
+
       return createUnauthenticatedAuthSessionState({
         sessionState: 'restoring',
         restoreFailureReason: null,
@@ -270,8 +310,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
    * Backend authorization remains authoritative. This frontend state is
    * for UX/routing only and must stay aligned with backend checks.
    */
-  const isAdmin = isUserAdmin(user);
-  const isAuthenticated = !!user || !!pendingFirebaseSession;
+  const isAdmin =
+    isUserAdmin(user) ||
+    (authSession.sessionState === 'authenticated' && authSession.role === 'Admin');
+  const isAuthenticated = Boolean(user?.id) && authSession.sessionState === 'authenticated';
   const isProfileHydrating = !!pendingFirebaseSession && !user;
   const authMode = authSession.authType;
   const sessionScopeKey =
@@ -406,19 +448,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const authListenerResolvedRef = React.useRef(false);
   const authResolutionTimeoutRef = React.useRef<number | null>(null);
-  const profileSyncTimeoutRef = React.useRef<number | null>(null);
+  const bootstrapPromiseRef = React.useRef<Promise<AuthSessionState | null> | null>(null);
+  const bootstrapUidRef = React.useRef<string | null>(null);
+  const bootstrapGenerationRef = React.useRef(0);
 
   const clearAuthResolutionTimeout = useCallback(() => {
     if (authResolutionTimeoutRef.current !== null) {
       window.clearTimeout(authResolutionTimeoutRef.current);
       authResolutionTimeoutRef.current = null;
-    }
-  }, []);
-
-  const clearProfileSyncTimeout = useCallback(() => {
-    if (profileSyncTimeoutRef.current !== null) {
-      window.clearTimeout(profileSyncTimeoutRef.current);
-      profileSyncTimeoutRef.current = null;
     }
   }, []);
 
@@ -448,6 +485,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     },
     []
   );
+
+  const resolveTtlRemainingMs = useCallback((expiresAt: string | null) => {
+    if (!expiresAt) {
+      return null;
+    }
+
+    const expiresAtMs = new Date(expiresAt).getTime();
+    if (!Number.isFinite(expiresAtMs)) {
+      return null;
+    }
+
+    return Math.max(0, expiresAtMs - Date.now());
+  }, []);
 
   const applyServerAuthSession = useCallback(
     (
@@ -509,34 +559,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       logger.info('Auth session established', {
         area: 'auth',
         event: 'auth-session-established',
-        authType: nextSession.authType,
-        sessionState: nextSession.sessionState,
-        sessionScopeKey,
-        rehydrationStatus: nextSession.rehydrationStatus,
+        mode: nextSession.authType,
+        lifecycle: nextSession.sessionState,
+        scope: sessionScopeKey,
+        rehydration: nextSession.rehydrationStatus,
+        ttlRemainingMs: resolveTtlRemainingMs(nextSession.expiresAt),
       });
 
       return nextSession;
     },
-    []
+    [resolveTtlRemainingMs]
   );
 
   const markAuthBootstrapIssue = useCallback(
-    (title: string, message: string, detail?: string) => {
+    (issue: AuthBootstrapIssue) => {
       logger.error('Auth bootstrap entered recovery mode', {
         area: 'auth',
         event: 'auth-bootstrap-recoverable-error',
-        title,
-        message,
-        detail,
+        title: issue.title,
+        message: issue.message,
+        detail: issue.detail,
+        reason: issue.reason,
+        phase: issue.phase,
         currentUserId: auth.currentUser?.uid || null,
       });
 
-      setAuthBootstrapState('recoverable_error');
-      setAuthBootstrapIssue({
-        title,
-        message,
-        detail,
-      });
+      setAuthBootstrapState('failed');
+      setAuthBootstrapIssue(issue);
       setIsAuthReady(true);
     },
     []
@@ -554,11 +603,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     logoutReason?: string | null;
     restoreFailureReason?: string | null;
   } = {}) => {
+    bootstrapGenerationRef.current += 1;
     setUser(null);
     setActivities([]);
     setUserRequests([]);
     setAllUsers([]);
     setPendingFirebaseSession(null);
+    bootstrapPromiseRef.current = null;
+    bootstrapUidRef.current = null;
     setAuthSession(
       createUnauthenticatedAuthSessionState({
         sessionState: options.sessionState || 'unauthenticated',
@@ -582,7 +634,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Welcome popup/audio are auth-entry UX, so they should reset when the
     // authenticated session ends and a later secure login starts fresh.
     clearWelcomeSessionFlags();
-    logger.info('Session state cleared');
+    logger.info('Session state cleared', {
+      area: 'auth',
+      event: 'auth-session-cleared',
+      nextState: options.sessionState || 'unauthenticated',
+      logoutReason: options.logoutReason || null,
+      restoreFailureReason: options.restoreFailureReason || null,
+    });
   }, []);
 
   /**
@@ -602,7 +660,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     checkEmailVerificationStatus: rawCheckEmailVerificationStatus,
     syncUserWithFirestore: rawSyncUserWithFirestore,
   } = useAuthActions(
-    setUser,
     logActivity,
     updateUser,
     checkUsernameAvailability,
@@ -615,6 +672,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       expectedAuthType: AuthSessionType | null | undefined,
       source: 'login' | 'restore' | 'refresh'
     ) => {
+      logger.info('Backend auth bootstrap started', {
+        area: 'auth',
+        event: 'auth-backend-bootstrap-started',
+        source,
+        expectedMode: expectedAuthType || 'auto',
+        currentUserId: auth.currentUser?.uid || null,
+      });
+
       const response =
         source === 'refresh'
           ? await refreshPlatformAuthSession(expectedAuthType, 'refresh')
@@ -658,52 +723,227 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
       }
 
+      logger.info('Backend auth bootstrap completed', {
+        area: 'auth',
+        event: 'auth-backend-bootstrap-completed',
+        source,
+        mode: nextSession.authType,
+        lifecycle: nextSession.sessionState,
+        ttlRemainingMs: resolveTtlRemainingMs(nextSession.expiresAt),
+      });
+
       return nextSession;
     },
-    [applyServerAuthSession, clearSessionState, resolveAuthModeMismatchMessage]
+    [applyServerAuthSession, clearSessionState, resolveAuthModeMismatchMessage, resolveTtlRemainingMs]
   );
 
-  const syncUserAndSession = useCallback(
+  const buildBootstrapIssue = useCallback(
+    (phase: AuthBootstrapState, error: unknown): AuthBootstrapIssue => {
+      const detail = error instanceof Error ? error.message : String(error);
+      const apiCode = isAuthSessionApiError(error) ? error.code || 'AUTH_SESSION_FAILURE' : null;
+
+      if (phase === 'hydrating_profile') {
+        return {
+          title: 'Session restore is still incomplete',
+          message:
+            'Your session was validated, but the workspace profile did not finish restoring cleanly.',
+          detail,
+          reason: apiCode || 'PROFILE_SYNC_FAILED',
+          phase,
+        };
+      }
+
+      return {
+        title: 'Startup is taking longer than expected',
+        message:
+          'The platform could not finish validating your session cleanly, so startup paused instead of entering a broken intermediate state.',
+        detail,
+        reason: apiCode || 'AUTH_BOOTSTRAP_FAILED',
+        phase,
+      };
+    },
+    []
+  );
+
+  const runAuthoritativeBootstrap = useCallback(
     async (
       firebaseUser: FirebaseUser,
       expectedAuthType: AuthSessionType | null | undefined,
       source: 'login' | 'restore'
     ) => {
-      await rawSyncUserWithFirestore(firebaseUser);
-      await establishAuthSession(expectedAuthType, source);
+      const bootstrapGeneration = bootstrapGenerationRef.current;
+
+      if (bootstrapPromiseRef.current && bootstrapUidRef.current === firebaseUser.uid) {
+        return bootstrapPromiseRef.current;
+      }
+
+      const bootstrapPromise = (async () => {
+        let phase: AuthBootstrapState = source === 'restore' ? 'restoring' : 'validating';
+
+        setPendingFirebaseSession({
+          uid: firebaseUser.uid,
+          email: firebaseUser.email ?? null,
+        });
+        setAuthBootstrapIssue(null);
+        setAuthBootstrapState(phase);
+        setIsAuthReady(false);
+
+        logger.info('Authoritative auth bootstrap started', {
+          area: 'auth',
+          event: 'auth-bootstrap-started',
+          source,
+          expectedMode: expectedAuthType || 'auto',
+          currentUserId: firebaseUser.uid,
+        });
+
+        try {
+          phase = 'validating';
+          setAuthBootstrapState(phase);
+
+          logger.info('Workspace profile sync started', {
+            area: 'auth',
+            event: 'auth-profile-sync-started',
+            source,
+            currentUserId: firebaseUser.uid,
+          });
+
+          /**
+           * Authoritative startup waits on both the backend session and the
+           * Firestore-backed profile. Running them together avoids making route
+           * readiness depend on whichever branch happened to update first.
+           */
+          const [nextSession, synchronizedUser] = await Promise.all([
+            establishAuthSession(expectedAuthType, source).catch((error) => {
+              phase = 'validating';
+              throw error;
+            }),
+            withTimeout(
+              rawSyncUserWithFirestore(firebaseUser),
+              AUTH_PROFILE_SYNC_TIMEOUT_MS,
+              'Workspace profile synchronization timed out.'
+            ).catch((error) => {
+              phase = 'hydrating_profile';
+              throw error;
+            }),
+          ]);
+
+          if (bootstrapGenerationRef.current !== bootstrapGeneration) {
+            return null;
+          }
+
+          phase = 'hydrating_profile';
+          setAuthBootstrapState(phase);
+
+          setUser(synchronizedUser);
+          setPendingFirebaseSession(null);
+          setAuthBootstrapIssue(null);
+          setAuthBootstrapState('authenticated');
+          setIsAuthReady(true);
+
+          logger.info('Authoritative auth bootstrap completed', {
+            area: 'auth',
+            event: 'auth-bootstrap-completed',
+            source,
+            mode: nextSession.authType,
+            lifecycle: nextSession.sessionState,
+            ttlRemainingMs: resolveTtlRemainingMs(nextSession.expiresAt),
+            currentUserId: firebaseUser.uid,
+          });
+
+          return nextSession;
+        } catch (error) {
+          if (bootstrapGenerationRef.current !== bootstrapGeneration) {
+            return null;
+          }
+
+          logger.error('Authoritative auth bootstrap failed', {
+            area: 'auth',
+            event: 'auth-bootstrap-failed',
+            source,
+            phase,
+            expectedMode: expectedAuthType || 'auto',
+            currentUserId: firebaseUser.uid,
+            error,
+          });
+
+          if (isAuthSessionApiError(error)) {
+            const isExpired =
+              error.code === 'SESSION_EXPIRED' ||
+              error.code === 'SESSION_MAX_LIFETIME_EXCEEDED';
+            const isInvalid =
+              error.code === 'SESSION_INVALIDATED' ||
+              error.code === 'AUTH_MODE_MISMATCH' ||
+              error.code === 'SESSION_MISSING';
+
+            if (isExpired || isInvalid) {
+              try {
+                await signOut(auth);
+              } catch {
+                // Best-effort sign-out only.
+              }
+
+              clearSessionState({
+                sessionState: isExpired ? 'expired' : 'invalid',
+                logoutReason: isExpired ? 'session_expired' : null,
+                restoreFailureReason: error.message,
+              });
+              setAuthBootstrapIssue(null);
+              setAuthBootstrapState(isExpired ? 'expired' : 'invalid');
+              setIsAuthReady(true);
+              throw error;
+            }
+          }
+
+          markAuthBootstrapIssue(buildBootstrapIssue(phase, error));
+          throw error;
+        }
+      })();
+
+      bootstrapPromiseRef.current = bootstrapPromise;
+      bootstrapUidRef.current = firebaseUser.uid;
+
+      try {
+        return await bootstrapPromise;
+      } finally {
+        if (bootstrapPromiseRef.current === bootstrapPromise) {
+          bootstrapPromiseRef.current = null;
+          bootstrapUidRef.current = null;
+        }
+      }
     },
-    [establishAuthSession, rawSyncUserWithFirestore]
+    [
+      buildBootstrapIssue,
+      clearSessionState,
+      establishAuthSession,
+      markAuthBootstrapIssue,
+      rawSyncUserWithFirestore,
+      resolveTtlRemainingMs,
+    ]
   );
-
-  const syncUserAndSessionRef = React.useRef(syncUserAndSession);
-
-  useEffect(() => {
-    syncUserAndSessionRef.current = syncUserAndSession;
-  }, [syncUserAndSession]);
 
   const login = useCallback(async (firebaseUser: FirebaseUser) => {
     writeStoredAuthSessionMode('normal');
 
     try {
       await rawLogin(firebaseUser);
-      await establishAuthSession('normal', 'login');
+      await runAuthoritativeBootstrap(firebaseUser, 'normal', 'login');
     } catch (error) {
       clearStoredAuthSessionMode();
       throw error;
     }
-  }, [establishAuthSession, rawLogin]);
+  }, [rawLogin, runAuthoritativeBootstrap]);
 
   const loginWithIdentifier = useCallback(async (identifier: string, password: string) => {
     writeStoredAuthSessionMode('normal');
 
     try {
-      await rawLoginWithIdentifier(identifier, password);
-      await establishAuthSession('normal', 'login');
+      const firebaseUser = await rawLoginWithIdentifier(identifier, password);
+      await runAuthoritativeBootstrap(firebaseUser, 'normal', 'login');
     } catch (error) {
       clearStoredAuthSessionMode();
       throw error;
     }
-  }, [establishAuthSession, rawLoginWithIdentifier]);
+  }, [rawLoginWithIdentifier, runAuthoritativeBootstrap]);
 
   const register = useCallback(async (email: string, password: string, userData: Partial<User>) => {
     await rawRegister(email, password, userData);
@@ -713,19 +953,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     writeStoredAuthSessionMode('admin');
 
     try {
-      const success = await rawAdminLogin(identifier, password);
-      if (!success) {
-        clearStoredAuthSessionMode();
-        return false;
-      }
-
-      await establishAuthSession('admin', 'login');
+      const firebaseUser = await rawAdminLogin(identifier, password);
+      await runAuthoritativeBootstrap(firebaseUser, 'admin', 'login');
       return true;
     } catch (error) {
       clearStoredAuthSessionMode();
       throw error;
     }
-  }, [establishAuthSession, rawAdminLogin]);
+  }, [rawAdminLogin, runAuthoritativeBootstrap]);
 
   const forgotPassword = useCallback(async (email: string) => {
     await rawForgotPassword(email);
@@ -764,6 +999,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         sessionState: 'logging_out',
         logoutReason: reason,
       }));
+      setAuthBootstrapState('logging_out');
 
       try {
         if (auth.currentUser) {
@@ -787,6 +1023,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         clearSessionState({
           logoutReason: reason,
         });
+        setAuthBootstrapState('unauthenticated');
+        setIsAuthReady(true);
         notify.success('Logged out successfully');
       } catch (error) {
         logger.error('Logout error', { error, reason });
@@ -795,6 +1033,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           logoutReason: reason,
           restoreFailureReason: error instanceof Error ? error.message : String(error),
         });
+        setAuthBootstrapState('invalid');
+        setIsAuthReady(true);
         notify.error('Logout failed');
       }
     },
@@ -823,6 +1063,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           error,
         });
 
+        if (isAuthSessionApiError(error)) {
+          const isExpired =
+            error.code === 'SESSION_EXPIRED' ||
+            error.code === 'SESSION_MAX_LIFETIME_EXCEEDED';
+          const isInvalid =
+            error.code === 'SESSION_INVALIDATED' ||
+            error.code === 'AUTH_MODE_MISMATCH' ||
+            error.code === 'SESSION_MISSING';
+
+          if (isExpired || isInvalid) {
+            try {
+              await signOut(auth);
+            } catch {
+              // Best-effort sign-out only.
+            }
+
+            clearSessionState({
+              sessionState: isExpired ? 'expired' : 'invalid',
+              logoutReason: isExpired ? 'session_expired' : null,
+              restoreFailureReason: message,
+            });
+            setAuthBootstrapState(isExpired ? 'expired' : 'invalid');
+            setIsAuthReady(true);
+            throw error;
+          }
+        }
+
         if (/session|sign in|authentication/i.test(message)) {
           try {
             await signOut(auth);
@@ -834,6 +1101,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             sessionState: 'invalid',
             restoreFailureReason: message,
           });
+          setAuthBootstrapState('invalid');
+          setIsAuthReady(true);
         } else {
           setAuthSession((current) => ({
             ...current,
@@ -857,46 +1126,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setAuthBootstrapIssue(null);
 
     if (!auth.currentUser) {
-      clearProfileSyncTimeout();
       clearAuthResolutionTimeout();
       authListenerResolvedRef.current = true;
       clearSessionState();
-      setAuthBootstrapState('ready');
+      setAuthBootstrapState('unauthenticated');
       setIsAuthReady(true);
       return;
     }
 
-    setPendingFirebaseSession({
-      uid: auth.currentUser.uid,
-      email: auth.currentUser.email ?? null,
-    });
-    setAuthBootstrapState('syncing_profile');
-    setIsAuthReady(true);
-    clearProfileSyncTimeout();
-    profileSyncTimeoutRef.current = window.setTimeout(() => {
-      markAuthBootstrapIssue(
-        'Session restore is still incomplete',
-        'We restored your Firebase session, but your workspace profile did not finish loading in time.',
-        'Retry startup or reset the session if the problem keeps happening.'
-      );
-    }, AUTH_PROFILE_SYNC_TIMEOUT_MS);
-
     try {
-      await syncUserAndSession(auth.currentUser, readStoredAuthSessionMode(), 'restore');
-    } catch (error) {
-      markAuthBootstrapIssue(
-        'Session restore failed',
-        'We could not finish restoring your workspace session.',
-        error instanceof Error ? error.message : String(error)
-      );
+      await runAuthoritativeBootstrap(auth.currentUser, readStoredAuthSessionMode(), 'restore');
+    } catch {
+      // The authoritative bootstrap path already committed the final state.
     }
-  }, [
-    clearAuthResolutionTimeout,
-    clearProfileSyncTimeout,
-    clearSessionState,
-    markAuthBootstrapIssue,
-    syncUserAndSession,
-  ]);
+  }, [clearAuthResolutionTimeout, clearSessionState, runAuthoritativeBootstrap]);
 
   const clearStalledAuthSession = useCallback(async () => {
     logger.warn('Clearing stalled auth session', {
@@ -906,7 +1149,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     clearAuthResolutionTimeout();
-    clearProfileSyncTimeout();
 
     try {
       if (auth.currentUser && authSession.authType) {
@@ -926,38 +1168,48 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       authListenerResolvedRef.current = true;
       setAuthBootstrapIssue(null);
       clearSessionState();
-      setAuthBootstrapState('ready');
+      setAuthBootstrapState('unauthenticated');
       setIsAuthReady(true);
     }
-  }, [authSession.authType, clearAuthResolutionTimeout, clearProfileSyncTimeout, clearSessionState]);
+  }, [authSession.authType, clearAuthResolutionTimeout, clearSessionState]);
 
   /**
    * Auth bootstrap listener
    * ---------------------------------------------------------
    * 2026 best practice:
-   * - resolve the base Firebase session quickly so routing does not stall
-   * - keep profile sync observable and separately time-bounded
-   * - never let remote sync work trap the whole app on a blank startup shell
+   * - Firebase hydration must resolve before we guess auth state
+   * - backend session validation is authoritative for restore/login readiness
+   * - profile hydration is part of the same bounded bootstrap transaction
    */
   useEffect(() => {
     let isMounted = true;
 
     authListenerResolvedRef.current = false;
-    setAuthBootstrapState('restoring');
+    setAuthBootstrapState('bootstrapping');
     setAuthBootstrapIssue(null);
+    setIsAuthReady(false);
     clearAuthResolutionTimeout();
-    clearProfileSyncTimeout();
+
+    logger.info('Startup bootstrap begin', {
+      area: 'auth',
+      event: 'auth-startup-begin',
+      storedMode: readStoredAuthSessionMode() || 'none',
+    });
 
     authResolutionTimeoutRef.current = window.setTimeout(() => {
       if (!isMounted || authListenerResolvedRef.current) {
         return;
       }
 
-      markAuthBootstrapIssue(
-        'Startup is taking longer than expected',
-        'We could not confirm your session in time, so the platform paused startup instead of staying on a blank screen.',
-        'Retry startup or reload the page. If this keeps happening, resetting the session usually restores normal entry.'
-      );
+      markAuthBootstrapIssue({
+        title: 'Startup is taking longer than expected',
+        message:
+          'Firebase auth hydration did not resolve in time, so startup paused instead of guessing the session state.',
+        detail:
+          'Retry startup or reload the page. If this keeps happening, reset the session so stale browser state cannot keep the platform in limbo.',
+        reason: 'FIREBASE_HYDRATION_TIMEOUT',
+        phase: 'bootstrapping',
+      });
     }, INITIAL_AUTH_RESOLUTION_TIMEOUT_MS);
 
     const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
@@ -970,55 +1222,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setAuthBootstrapIssue(null);
 
       if (firebaseUser) {
-        logger.info('Firebase session restored, starting profile sync', {
+        logger.info('Firebase auth hydration resolved', {
           area: 'auth',
-          event: 'auth-bootstrap-session-restored',
-          userId: firebaseUser.uid,
+          event: 'auth-firebase-hydration-resolved',
+          currentUserId: firebaseUser.uid,
+          storedMode: readStoredAuthSessionMode() || 'none',
         });
 
-        /**
-         * Keep the authenticated shell renderable as soon as Firebase resolves
-         * the session. Firestore/profile hydration is important, but it must no
-         * longer hold the entire app hostage behind the initial startup gate.
-         */
-        setPendingFirebaseSession({
-          uid: firebaseUser.uid,
-          email: firebaseUser.email ?? null,
-        });
-        setAuthBootstrapState('syncing_profile');
-        setIsAuthReady(true);
-
-        clearProfileSyncTimeout();
-        profileSyncTimeoutRef.current = window.setTimeout(() => {
-          if (!isMounted) {
-            return;
-          }
-
-          markAuthBootstrapIssue(
-            'Session restore is still incomplete',
-            'Your Firebase session came back, but your workspace profile did not finish restoring.',
-            'You can retry startup or reset the session without losing the rest of the app shell.'
-          );
-        }, AUTH_PROFILE_SYNC_TIMEOUT_MS);
-
-        void syncUserAndSessionRef.current(firebaseUser, readStoredAuthSessionMode(), 'restore').catch((error) => {
-          if (!isMounted) {
-            return;
-          }
-
-          logger.error('Auth profile sync failed during bootstrap', {
-            area: 'auth',
-            event: 'auth-bootstrap-profile-sync-failed',
-            userId: firebaseUser.uid,
-            error,
-          });
-          markAuthBootstrapIssue(
-            'Session restore failed',
-            'We restored your Firebase session but could not finish loading your workspace profile.',
-            error instanceof Error ? error.message : String(error)
-          );
-        });
-
+        void runAuthoritativeBootstrap(firebaseUser, readStoredAuthSessionMode(), 'restore').catch(() => undefined);
         return;
       }
 
@@ -1027,43 +1238,77 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         event: 'auth-bootstrap-no-session',
       });
 
-      clearProfileSyncTimeout();
       clearSessionState();
-      setAuthBootstrapState('ready');
+      setAuthBootstrapState('unauthenticated');
       setIsAuthReady(true);
     });
 
     return () => {
       isMounted = false;
       clearAuthResolutionTimeout();
-      clearProfileSyncTimeout();
       unsubscribeAuth();
     };
-  }, [
-    clearAuthResolutionTimeout,
-    clearProfileSyncTimeout,
-    clearSessionState,
-    markAuthBootstrapIssue,
-    syncUserAndSessionRef,
-  ]);
+  }, [clearAuthResolutionTimeout, clearSessionState, markAuthBootstrapIssue, runAuthoritativeBootstrap]);
 
   useEffect(() => {
-    if (!user?.id) {
+    if (authSession.sessionState !== 'authenticated' || !authSession.expiresAt) {
       return;
     }
 
-    logger.info('Workspace profile sync completed', {
-      area: 'auth',
-      event: 'auth-bootstrap-profile-sync-completed',
-      userId: user.id,
-    });
+    const expiresAtMs = new Date(authSession.expiresAt).getTime();
+    if (!Number.isFinite(expiresAtMs)) {
+      return;
+    }
 
-    clearProfileSyncTimeout();
-    setPendingFirebaseSession(null);
-    setAuthBootstrapIssue(null);
-    setAuthBootstrapState('ready');
-    setIsAuthReady(true);
-  }, [clearProfileSyncTimeout, user?.id]);
+    const expireCurrentSession = async () => {
+      logger.warn('Active auth session reached its hard expiry', {
+        area: 'auth',
+        event: 'auth-session-hard-expired',
+        mode: authSession.authType,
+        expiresAt: authSession.expiresAt,
+        currentUserId: auth.currentUser?.uid || null,
+      });
+
+      try {
+        if (auth.currentUser && authSession.authType) {
+          await logoutPlatformAuthSession(authSession.authType, 'session_expired').catch(() => undefined);
+        }
+
+        if (auth.currentUser) {
+          await signOut(auth);
+        }
+      } finally {
+        clearSessionState({
+          sessionState: 'expired',
+          logoutReason: 'session_expired',
+          restoreFailureReason: 'Session expired. Please sign in again.',
+        });
+        setAuthBootstrapState('expired');
+        setIsAuthReady(true);
+        notify.warning('Your 3-hour session expired. Please sign in again.');
+      }
+    };
+
+    const remainingMs = expiresAtMs - Date.now();
+    if (remainingMs <= 0) {
+      void expireCurrentSession();
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void expireCurrentSession();
+    }, remainingMs);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [
+    authSession.authType,
+    authSession.expiresAt,
+    authSession.sessionState,
+    clearSessionState,
+    notify,
+  ]);
 
   useEffect(() => {
     if (!user?.id || !auth.currentUser || authSession.sessionState !== 'authenticated') {

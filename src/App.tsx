@@ -255,11 +255,43 @@ const LoginRouteGuard: React.FC = () => {
     isAuthenticated,
     isAuthReady,
     isAdmin,
+    authBootstrapState,
     authBootstrapIssue,
     retryAuthBootstrap,
     clearStalledAuthSession,
   } = useAuth();
   const location = useLocation();
+  const lastRouteGuardLogRef = React.useRef<string | null>(null);
+
+  const logRouteGuardDecision = React.useCallback(
+    (gate: string, extra: Record<string, unknown> = {}) => {
+      const payload = {
+        area: 'routing',
+        event: 'login-route-gate',
+        route: location.pathname,
+        gate,
+        mode: authMode || 'none',
+        admin: isAdmin,
+        authReady: isAuthReady,
+        startupPhase: authBootstrapState,
+        ...extra,
+      };
+      const logKey = JSON.stringify(payload);
+      if (lastRouteGuardLogRef.current === logKey) {
+        return;
+      }
+
+      lastRouteGuardLogRef.current = logKey;
+
+      if (gate === 'render_login') {
+        logger.info('Login route guard rendered login screen', payload);
+        return;
+      }
+
+      logger.warn('Login route guard redirected or blocked', payload);
+    },
+    [authBootstrapState, authMode, isAdmin, isAuthReady, location.pathname]
+  );
 
   /**
    * SECURITY-SENSITIVE ROUTING NOTE
@@ -272,6 +304,7 @@ const LoginRouteGuard: React.FC = () => {
    * - otherwise land on the shared Assessment generator entry page
    */
   if (!isAuthReady) {
+    logRouteGuardDecision('waiting_for_bootstrap');
     return (
       <div className="min-h-screen flex items-center justify-center bg-zinc-50 dark:bg-zinc-950">
         <div className="w-8 h-8 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin" />
@@ -280,6 +313,10 @@ const LoginRouteGuard: React.FC = () => {
   }
 
   if (authBootstrapIssue) {
+    logRouteGuardDecision('startup_recovery', {
+      reason: authBootstrapIssue.reason,
+      phase: authBootstrapIssue.phase,
+    });
     return (
       <AppStartupRecovery
         title={authBootstrapIssue.title}
@@ -292,9 +329,14 @@ const LoginRouteGuard: React.FC = () => {
   }
 
   if (isAuthenticated) {
-    return <Navigate to={resolvePostAuthPath({ isAdmin, authMode, user, state: location.state })} replace />;
+    const nextPath = resolvePostAuthPath({ isAdmin, authMode, user, state: location.state });
+    logRouteGuardDecision('redirect_authenticated', {
+      destination: nextPath,
+    });
+    return <Navigate to={nextPath} replace />;
   }
 
+  logRouteGuardDecision('render_login');
   return <Login />;
 };
 

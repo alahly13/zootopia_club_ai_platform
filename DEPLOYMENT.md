@@ -172,6 +172,33 @@ Cloud Run uses `cloudbuild.yaml` to build and deploy the shared Docker image.
 
 That gives Cloud Run the same backend runtime contract as Railway and Fly.io instead of a separate platform-specific install path.
 
+### Cloud Run runtime env workflow
+
+Keep Cloud Run runtime variables in a local `cloudrun.env` file and apply them with:
+
+- `gcloud run deploy zootopia-api --source . --region us-central1 --allow-unauthenticated --env-vars-file=cloudrun.env`
+- `gcloud run services update zootopia-api --region us-central1 --env-vars-file=cloudrun.env`
+
+`cloudrun.env` is intentionally a local deploy/update input, not an in-image config file, so it should stay out of Git and out of the Docker/Cloud Run source bundle.
+
+### Temporary bundled Firebase Admin key workflow
+
+The backend currently supports two Firebase Admin credential paths:
+
+- `GOOGLE_APPLICATION_CREDENTIALS` when it points to a readable JSON key file
+- bundled `serviceAccountKey.json` at the repo root, which lands at `/app/serviceAccountKey.json` inside the shared Docker image
+
+For the temporary Cloud Run convenience path:
+
+- keep `serviceAccountKey.json` at the repo root locally
+- set `GOOGLE_APPLICATION_CREDENTIALS=/app/serviceAccountKey.json` in `cloudrun.env`
+- deploy or update the service with `--env-vars-file=cloudrun.env`
+
+This is intentionally temporary. The later secure migration path is:
+
+- attached Cloud Run service account with Application Default Credentials
+- or Secret Manager / mounted secret file
+
 ## Docker Fallback
 
 The `Dockerfile` is the portable backend contract for:
