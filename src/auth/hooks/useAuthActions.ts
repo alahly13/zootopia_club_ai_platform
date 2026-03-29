@@ -20,6 +20,7 @@ import toast from 'react-hot-toast';
 import { ADMIN_IDENTITIES, RESERVED_USERNAMES } from '../../constants/admins';
 import { defaultPermissions, defaultLimits, defaultUsage, defaultUserSettings } from '../defaults';
 import { isUserAdmin, normalizeAdminLevel, normalizeUserRole } from '../accessControl';
+import { runtimeTimeouts } from '../../config/runtime';
 
 const STATUS: Record<string, UserStatus> = {
   PENDING_EMAIL: 'PendingEmailVerification',
@@ -30,8 +31,8 @@ const STATUS: Record<string, UserStatus> = {
   BLOCKED: 'Blocked',
 } as const;
 
-const USERNAME_RESOLUTION_TIMEOUT_MS = 8_000;
-const ADMIN_CLAIMS_SYNC_TIMEOUT_MS = 8_000;
+const USERNAME_RESOLUTION_TIMEOUT_MS = runtimeTimeouts.authIdentifierResolutionMs;
+const ADMIN_CLAIMS_SYNC_TIMEOUT_MS = runtimeTimeouts.adminClaimsSyncMs;
 
 type LoginIdentifierKind = 'email' | 'username';
 

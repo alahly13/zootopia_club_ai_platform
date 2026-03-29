@@ -78,6 +78,20 @@ export class DocumentIntakeService {
           buffer: input.buffer,
         });
 
+        logDiagnostic('info', 'document_runtime.source_file_persisted', {
+          area: 'document-runtime',
+          traceId,
+          stage: 'upload',
+          status: 'success',
+          details: {
+            documentId,
+            workflowId,
+            sourceFileId: storedSource.sourceFileId,
+            fileName: input.fileName,
+            processingPathway: strategy.pathway,
+          },
+        });
+
         const document = await this.artifactStore.createDocumentRecord({
           documentId,
           workflowId,
@@ -104,6 +118,19 @@ export class DocumentIntakeService {
           runtimeOperationId: operationId,
         });
         documentCreated = true;
+
+        logDiagnostic('info', 'document_runtime.document_record_ready', {
+          area: 'document-runtime',
+          traceId,
+          stage: 'persist_document',
+          status: 'success',
+          details: {
+            documentId: document.documentId,
+            workflowId: document.workflowId,
+            runtimeOperationId: document.runtimeOperationId,
+            processingPathway: strategy.pathway,
+          },
+        });
 
         await runtimeStateService.setDocumentState(input.actor, documentId, {
           documentId,
@@ -159,6 +186,19 @@ export class DocumentIntakeService {
           pageMapPath: persistedArtifact.pageMapPath,
           ocrBlocksPath: persistedArtifact.ocrBlocksPath,
           manifestPath: persistedArtifact.manifestPath,
+        });
+
+        logDiagnostic('info', 'document_runtime.artifact_record_ready', {
+          area: 'document-runtime',
+          traceId,
+          stage: 'persist_artifact',
+          status: 'success',
+          details: {
+            documentId,
+            workflowId,
+            artifactId: artifact.artifactId,
+            processingPathway: strategy.pathway,
+          },
         });
 
         const runtime = {

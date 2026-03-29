@@ -8,6 +8,7 @@ import { auth } from '../firebase';
 import { SUBSCRIPTION_PLANS } from '../constants/plans';
 import { getLocalizedPrice, resolveUserCurrency } from '../services/billing/pricingDisplayService';
 import { CurrencyCode } from '../types/billing';
+import { buildAppUrl } from '../config/runtime';
 
 const Pricing = () => {
   const { t } = useTranslation();
@@ -56,8 +57,8 @@ const Pricing = () => {
           userId: user.id,
           userEmail: user.email,
           currency: selectedCurrency,
-          successUrl: `${window.location.origin}/billing?success=true`,
-          cancelUrl: `${window.location.origin}/pricing?cancelled=true`,
+          successUrl: buildAppUrl('/billing?success=true'),
+          cancelUrl: buildAppUrl('/pricing?cancelled=true'),
         }),
       });
 

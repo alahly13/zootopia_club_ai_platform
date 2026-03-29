@@ -1,4 +1,5 @@
 import { auth } from '../../firebase';
+import { runtimeTimeouts } from '../../config/runtime';
 import type { ApiResponse } from '../../types/api';
 import type { AuthSessionType, ServerAuthSessionState } from './types';
 
@@ -12,7 +13,7 @@ type SessionErrorPayload = ApiResponse<SessionEnvelope> & {
   details?: unknown;
 };
 
-const AUTH_SESSION_API_TIMEOUT_MS = 12_000;
+const AUTH_SESSION_API_TIMEOUT_MS = runtimeTimeouts.authSessionApiMs;
 
 export class AuthSessionApiError extends Error {
   constructor(

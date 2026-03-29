@@ -18,6 +18,7 @@ type EmailDispatchPayload = {
 
 type EmailDispatchResult = {
   success: boolean;
+  error?: string;
   message?: string;
   attempted?: number;
   sent?: number;
@@ -81,7 +82,7 @@ class EmailDeliveryService {
       body: JSON.stringify(payload),
     });
 
-    const result = await safeParseJson(response);
+    const result = await safeParseJson<EmailDispatchResult>(response);
 
     if (!response.ok) {
       throw new Error(

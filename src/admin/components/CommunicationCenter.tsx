@@ -20,12 +20,13 @@ import {
   Zap,
 } from 'lucide-react';
 import { useAuth } from '../../auth/AuthContext';
-import { isUserAdmin } from '../../auth/accessControl';
+import { isUserAdmin, normalizeUserRole } from '../../auth/accessControl';
 import { Purpose } from '../../types/communication';
 import { purposeDispatchService } from '../../services/purposeDispatchService';
 import { templates } from '../../services/communicationTemplates';
 import toast from 'react-hot-toast';
 import { cn } from '../../utils';
+import type { User } from '../../utils';
 import { auth } from '../../firebase';
 import { cleanString, toPositiveInteger } from '../../utils/validators';
 
@@ -38,7 +39,7 @@ type NormalizedRecipient = {
   name: string;
   email: string;
   username: string;
-  role: string;
+  role: User['role'];
   status: string;
   authProviders: string[];
   picture?: string;
@@ -80,7 +81,7 @@ function normalizeRecipient(raw: any): NormalizedRecipient {
     name: String(raw?.name || raw?.displayName || 'Unknown User'),
     email: String(raw?.email || ''),
     username: String(raw?.username || ''),
-    role: String(raw?.role || 'user'),
+    role: normalizeUserRole(raw?.role),
     status: String(raw?.status || raw?.accountStatus || 'unknown'),
     authProviders: providers,
     picture: raw?.picture || raw?.photoURL || '',
@@ -127,7 +128,7 @@ function getMessageTypeIcon(type: MessageType) {
 
 export const CommunicationCenter: React.FC = () => {
   const { t } = useTranslation();
-  const { allUsers, isAdmin } = useAuth();
+  const { allUsers, isAdmin, user: currentUser } = useAuth();
 
   // Form state
   const [channel, setChannel] = useState<DeliveryChannel>('internal');

@@ -1,5 +1,6 @@
 import { getBearerAuthHeaders } from '../utils/authHeaders';
 import { DocumentRuntimeContextRef } from '../ai/types';
+import { logger } from '../utils/logger';
 
 export interface DocumentIntakeResponse {
   success: true;
@@ -122,36 +123,202 @@ function normalizeFetchError(error: unknown): Error {
   return new Error(String(error || 'document-runtime-request-failed'));
 }
 
+export interface DocumentIntakeUploadState {
+  phase: 'started' | 'progress' | 'completed';
+  requestUrl: string;
+  loadedBytes: number;
+  totalBytes: number | null;
+}
+
+export interface DocumentIntakePreparationState {
+  phase: 'started';
+  requestUrl: string;
+}
+
 export async function intakeDocument(
   file: File,
   options: {
     signal?: AbortSignal;
     requestedPathway?: 'local_extraction' | 'direct_file_to_model';
+    onUploadStateChange?: (state: DocumentIntakeUploadState) => void;
+    onPreparationStateChange?: (state: DocumentIntakePreparationState) => void;
   } = {}
 ): Promise<DocumentIntakeResponse> {
+  const requestedPathway = options.requestedPathway || 'local_extraction';
+  const requestUrl = '/api/documents/intake';
+
+  logger.info('Document intake request started', {
+    area: 'documents',
+    event: 'document-intake-request-started',
+    fileName: file.name,
+    fileSizeBytes: file.size,
+    mimeType: file.type || 'application/octet-stream',
+    requestedPathway,
+    requestUrl,
+    signalAborted: options.signal?.aborted || false,
+  });
+
   const headers = await getBearerAuthHeaders({
     'Content-Type': 'application/octet-stream',
     'x-zootopia-file-name': encodeURIComponent(file.name),
     'x-zootopia-file-type': file.type || 'application/octet-stream',
-    'x-zootopia-document-pathway': options.requestedPathway || 'local_extraction',
+    'x-zootopia-document-pathway': requestedPathway,
   });
 
+  let responseStatus: number | null = null;
+
   try {
-    const response = await fetch('/api/documents/intake', {
-      method: 'POST',
-      headers,
-      body: file,
-      signal: options.signal,
+    const payload = await new Promise<DocumentIntakeResponse>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      let settled = false;
+      let uploadCompleted = false;
+
+      const finishWithError = (error: unknown) => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        reject(normalizeFetchError(error));
+      };
+
+      const finishWithSuccess = (value: DocumentIntakeResponse) => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        resolve(value);
+      };
+
+      const abortHandler = () => {
+        xhr.abort();
+      };
+
+      if (options.signal) {
+        if (options.signal.aborted) {
+          finishWithError(options.signal.reason || new DOMException('The operation was aborted.', 'AbortError'));
+          return;
+        }
+
+        options.signal.addEventListener('abort', abortHandler, { once: true });
+      }
+
+      const cleanup = () => {
+        if (options.signal) {
+          options.signal.removeEventListener('abort', abortHandler);
+        }
+      };
+
+      xhr.open('POST', requestUrl, true);
+      Object.entries(headers).forEach(([key, value]) => {
+        xhr.setRequestHeader(key, value);
+      });
+
+      xhr.upload.onloadstart = () => {
+        options.onUploadStateChange?.({
+          phase: 'started',
+          requestUrl,
+          loadedBytes: 0,
+          totalBytes: file.size || null,
+        });
+      };
+
+      xhr.upload.onprogress = (event) => {
+        options.onUploadStateChange?.({
+          phase: 'progress',
+          requestUrl,
+          loadedBytes: event.loaded,
+          totalBytes: event.lengthComputable ? event.total : file.size || null,
+        });
+      };
+
+      xhr.upload.onload = () => {
+        uploadCompleted = true;
+        options.onUploadStateChange?.({
+          phase: 'completed',
+          requestUrl,
+          loadedBytes: file.size,
+          totalBytes: file.size || null,
+        });
+        options.onPreparationStateChange?.({
+          phase: 'started',
+          requestUrl,
+        });
+      };
+
+      xhr.onerror = () => {
+        cleanup();
+        finishWithError(new Error('document-intake-failed'));
+      };
+
+      xhr.onabort = () => {
+        cleanup();
+        finishWithError(options.signal?.reason || new DOMException('The operation was aborted.', 'AbortError'));
+      };
+
+      xhr.onload = () => {
+        cleanup();
+        responseStatus = xhr.status;
+
+        if (!uploadCompleted) {
+          options.onUploadStateChange?.({
+            phase: 'completed',
+            requestUrl,
+            loadedBytes: file.size,
+            totalBytes: file.size || null,
+          });
+          options.onPreparationStateChange?.({
+            phase: 'started',
+            requestUrl,
+          });
+        }
+
+        try {
+          const responseText = xhr.responseText || '';
+          const parsedPayload = responseText ? JSON.parse(responseText) : {};
+
+          if (xhr.status < 200 || xhr.status >= 300 || parsedPayload?.success === false) {
+            finishWithError(new Error(String(parsedPayload?.error || 'document-intake-failed')));
+            return;
+          }
+
+          finishWithSuccess(parsedPayload as DocumentIntakeResponse);
+        } catch (error) {
+          finishWithError(error);
+        }
+      };
+
+      try {
+        xhr.send(file);
+      } catch (error) {
+        cleanup();
+        finishWithError(error);
+      }
     });
 
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || payload?.success === false) {
-      throw new Error(String(payload?.error || 'document-intake-failed'));
-    }
+    logger.info('Document intake request completed', {
+      area: 'documents',
+      event: 'document-intake-request-completed',
+      fileName: file.name,
+      responseStatus,
+      documentId: payload?.document?.documentId || null,
+      artifactId: payload?.artifact?.artifactId || null,
+      operationId: payload?.operation?.operationId || null,
+    });
 
     return payload as DocumentIntakeResponse;
   } catch (error: unknown) {
     const normalized = normalizeFetchError(error);
+    logger.warn('Document intake request failed', {
+      area: 'documents',
+      event: 'document-intake-request-failed',
+      fileName: file.name,
+      requestedPathway,
+      responseStatus,
+      signalAborted: options.signal?.aborted || false,
+      error: normalized.message,
+    });
     if (normalized.name === 'AbortError') {
       throw new Error('File processing was cancelled.');
     }

@@ -8,6 +8,12 @@
 [build.environment]
   NODE_VERSION = "22"
   NPM_FLAGS = "--include=dev"
+  VITE_DEPLOY_TARGET = "netlify"
+  VITE_API_BASE_URL = "https://zootopia-api-38079185268.us-central1.run.app"
+
+# `VITE_API_BASE_URL` is pinned here to the current Cloud Run backend so the
+# Netlify build works without same-origin `/api` assumptions. Override it in the
+# Netlify site environment if the backend host changes.
 
 [[redirects]]
   from = "/*"

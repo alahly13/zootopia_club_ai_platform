@@ -43,6 +43,7 @@ import { auth } from '../firebase';
 import { mapToolUnlockRedeemError } from '../services/toolUnlockErrorMap';
 import { preloadWorkspaceRoute } from '../routing/workspaceRoutes';
 import { POPUP_FLOW_PRIORITY, TOOL_UNLOCK_FLOW_ID } from '../constants/popupFlows';
+import { buildAppUrl } from '../config/runtime';
 
 const TOOL_UNLOCK_PRICE_EGP = 200;
 
@@ -204,8 +205,8 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onClose, isC
       const idToken = await auth.currentUser?.getIdToken();
       if (!idToken) throw new Error('Missing authentication token. Please sign in again.');
 
-      const successUrl = `${window.location.origin}/billing?success=true&unlockTool=${encodeURIComponent(toolId)}`;
-      const cancelUrl = `${window.location.origin}/billing?cancelled=true&unlockTool=${encodeURIComponent(toolId)}`;
+      const successUrl = buildAppUrl(`/billing?success=true&unlockTool=${encodeURIComponent(toolId)}`);
+      const cancelUrl = buildAppUrl(`/billing?cancelled=true&unlockTool=${encodeURIComponent(toolId)}`);
 
       const response = await fetch('/api/billing/create-tool-unlock-checkout', {
         method: 'POST',

@@ -1,5 +1,7 @@
+import { runtimeTimeouts } from '../config/runtime';
+
 const STARTUP_READY_EVENT = 'zootopia:app-shell-ready';
-const STARTUP_FALLBACK_TIMEOUT_MS = 18_000;
+const STARTUP_FALLBACK_TIMEOUT_MS = runtimeTimeouts.startupFallbackMs;
 
 type StartupFailureTone = 'error' | 'timeout';
 

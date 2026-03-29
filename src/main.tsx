@@ -8,6 +8,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import { installStartupGuard, renderStartupFallback } from './bootstrap/installStartupGuard.ts';
+import { installApiRuntimeFetchBridge } from './config/runtime.ts';
 import './index.css';
 
 const rootElement = document.getElementById('root');
@@ -17,6 +18,7 @@ if (!rootElement) {
 }
 
 const cleanupStartupGuard = installStartupGuard(rootElement);
+installApiRuntimeFetchBridge();
 
 try {
   createRoot(rootElement).render(

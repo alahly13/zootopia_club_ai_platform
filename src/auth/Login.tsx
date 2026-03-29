@@ -34,9 +34,10 @@ import {
 } from './session/storage';
 import { withTimeout } from '../utils/async';
 import { logger } from '../utils/logger';
+import { runtimeTimeouts } from '../config/runtime';
 import type { FacultyScienceFastAccessAccountState } from '../types/api';
 
-const ADMIN_LOGIN_TIMEOUT_MS = 15_000;
+const ADMIN_LOGIN_TIMEOUT_MS = runtimeTimeouts.adminLoginMs;
 
 type AdminAuthErrorState = {
   message: string;

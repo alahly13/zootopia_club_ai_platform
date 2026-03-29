@@ -1,7 +1,8 @@
 ﻿================================================================================
 ZOOTOPIA CLUB - MASTER PROJECT LEDGER & SYSTEM RECORD
 ================================================================================
-
+Verified current-code snapshot: 2026-03-29
+Primary backend URL referenced by deployment config: https://zootopia-api-38079185268.us-central1.run.app
 *** IMPORTANT INSTRUCTIONS FOR FUTURE AI ASSISTANTS & DEVELOPERS ***
 1. READ THIS FILE FIRST before making any architectural, structural, or logic changes.
 2. USE THIS FILE as your primary context memory for the project.
@@ -9,225 +10,322 @@ ZOOTOPIA CLUB - MASTER PROJECT LEDGER & SYSTEM RECORD
 4. UPDATE THIS FILE immediately after making any significant changes (new features, architecture shifts, new dependencies, etc.).
 5. APPEND to the Change Log at the bottom; do not overwrite historical context.
 6. Keep modifications dated, structured, and professional.
-rnd_AcBwjgenUr7jtPSn1p0PlOvT3aoh
+7. If this verified summary conflicts with an older narrative note or historical change-log entry, trust the newer verified summary first, then confirm against the live code.
 ================================================================================
 1. PROJECT IDENTITY
 ================================================================================
 - Project Name: Zootopia Club
-- Purpose: AI-powered Science Education Platform
-- Description: A comprehensive, multi-tool platform offering AI-driven educational resources, including quiz generation, document analysis, study tools, image/video generation, and interactive chatbots.
-- Status: Active development. Features a highly modular multi-model orchestration system.
-- Ledger Generated/Updated: 2026-03-26
-cd "D:\Zootopia Club AI"
-python -m venv .venv
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r server\documentRuntime\python\requirements.txt
-python -m pip list
+- Package Manifest Name: `react-example` in `package.json` (legacy package name; not the product name).
+- Purpose: AI-assisted science education platform with document analysis, quiz generation, study tools, chatbot flows, image/infographic generation, live voice tooling, admin governance, billing, and communication systems.
+- Current Status: Active development. The repo supports both integrated local development and split production deployments.
+- Current Architecture Style: React SPA frontend plus Express/TypeScript backend, backed by Firebase Auth/Firestore/Storage, with server-authoritative AI execution, billing, entitlements, admin governance, and owner-scoped document-runtime orchestration.
+- Runtime Shape:
+  - Local development is a single integrated process through `server.ts`, which mounts Vite middleware and serves the React app.
+  - Production-capable deployments can split static frontend hosting from the API/backend runtime.
+- Ledger Snapshot Refreshed: 2026-03-29
+- Verified Against: `package.json`, `package-lock.json`, `vite.config.ts`, `server.ts`, `firebase.json`, `netlify.toml`, `cloudbuild.yaml`, `Dockerfile`, `.env.example`, `cloudrun.env`, `deployment/runtime-manifest.json`, `firestore.rules`, `storage.rules`, `src/`, `server/`, and `tests/`.
 ================================================================================
-2. PROJECT STRUCTURE OVERVIEW
+2. DEPENDENCY / RUNTIME AUDIT
 ================================================================================
-- Root:
-  - `package.json`, `vite.config.ts`, `tsconfig.json`: build and tooling config.
-  - `server.ts`: Express backend entry point.
-  - `server/`: backend authority for billing, entitlements, AI execution, communication, diagnostics, admin services, and the owner-scoped document runtime.
-  - `server/documentRuntime/`: canonical backend document runtime layer for intake, actor scoping, artifact persistence, Redis-backed ephemeral coordination, prompt-context resolution, direct-file-mode preparation, and cleanup.
-  - Firebase/Firestore config: `firebase-applet-config.json`, `firebase-blueprint.json`, `firestore.rules`, `storage.rules`.
-  - `ZOOTOPIA_PROJECT_LEDGER.txt`: canonical architecture and change record. Keep it aligned with the real codebase.
-- Frontend application root: `src/`
-  - `src/features/`: canonical feature-owned tool modules introduced by the 2026-03-26 isolation refactor.
-  - `src/routing/`: route registry and lazy workspace ownership (`workspaceRoutes.ts`).
-  - `src/orchestration/`: shell-level orchestration logic such as popup priority resolution.
-  - `src/components/`, `src/pages/`, `src/hooks/`: shared UI/app-shell code plus temporary compatibility bridge files that preserve legacy import paths during migration.
-  - `src/auth/`, `src/contexts/`, `src/notifications/`, `src/themes/`: global providers, auth/access-control normalization, and cross-app state systems.
-  - `src/ai/`: centralized AI model registry, provider wrappers, execution, and routing.
-  - `src/admin/`: admin-only UI and admin workflow surfaces.
-  - `src/services/`, `src/upload/`, `src/utils/`, `src/constants/`, `src/types/`, `src/i18n/`: cross-tool platform services and shared infrastructure.
+- Runtime Baselines:
+  - Node.js engine: `22.x` (`package.json`)
+  - Python runtime contract: `3.11` (`deployment/runtime-manifest.json`)
+  - Backend entry: `server.ts`
+  - Frontend output: `dist`
+- Exact installed versions verified from `package-lock.json`:
+  - Frontend core: React `19.2.4`, React DOM `19.2.4`, React Router DOM `7.13.1`, Vite `6.4.1`, TypeScript `5.8.3`
+  - Styling / UI: Tailwind CSS `4.2.2`, `@tailwindcss/vite` `4.2.2`, motion `12.38.0`, lucide-react `0.546.0`, react-hot-toast `2.6.0`, recharts `3.8.0`
+  - Firebase / auth / data: firebase `12.11.0`, firebase-admin `13.7.0`, `@react-oauth/google` `0.13.4`
+  - Backend / runtime: Express `4.22.1`, tsx `4.21.0`, dotenv `17.2.3`, redis `4.7.1`, better-sqlite3 `12.8.0`, nodemailer `8.0.3`
+  - AI / provider SDKs: `@google/genai` `1.46.0`
+  - Document / export tooling: pdfjs-dist `5.5.207`, mammoth `1.12.0`, xlsx `0.18.5`, docx `9.6.1`, jspdf `4.2.1`, jspdf-autotable `5.0.7`, html2canvas `1.4.1`, file-saver `2.0.5`
+  - i18n: i18next `25.10.5`, react-i18next `16.6.2`, i18next-browser-languagedetector `8.2.1`
+- Versioning Note:
+  - `package.json` still declares broader requested ranges such as React `^19.0.0`, Vite `^6.2.0`, Firebase `^12.10.0`, and Express `^4.21.2`.
+  - The exact versions above are the current installed repo state and should be treated as the most precise ledger source unless the lockfile changes.
 
 ================================================================================
-3. FRONTEND ARCHITECTURE
+3. CURRENT ARCHITECTURE & OWNERSHIP SEPARATION
 ================================================================================
-- Framework: React 19 (Vite build system)
-- Styling: Tailwind CSS v4, clsx, tailwind-merge
-- State Management: React Context API for platform-wide state (`AuthContext`, `LanguageContext`, `ThemeProvider`, `NotificationContext`, `SidebarContext`, `PopupOrchestratorContext`) plus feature-local component/hook state inside tool modules.
-- Routing: URL-based routing through `BrowserRouter` and `react-router-dom`, with authenticated workspace route ownership centralized in `src/routing/workspaceRoutes.ts`.
-- Animations: motion/react (Framer Motion)
-- App Shell: `src/App.tsx` + `src/components/MainLayout.tsx` control providers, protected routing, and the shared authenticated shell.
-- Route Loading: `workspaceRoutes.ts` is the canonical lazy-route registry. Do not duplicate workspace lazy ownership ad hoc inside feature files.
-- Feature Isolation: Core tool route-entry ownership now lives under `src/features/*`. Legacy top-level tool files in `src/components/`, `src/pages/`, and `src/hooks/` remain only as compatibility re-exports where noted.
-- Shared UI: Shell/layout/status primitives remain centralized under shared folders such as `src/components/`, `src/components/status/`, `src/notifications/`, `src/themes/`, and `src/upload/`.
-- Global Document Ownership: `DocumentProvider` remains mounted at the app-shell layer. Uploaded files are global resources and must not be trapped inside one tool route.
-- Document Runtime Mirror Rule: `DocumentContext` is now the authenticated frontend mirror of the backend document runtime, not the sole source of truth for cross-tool prompt context. Owner-scoped artifact identity and runtime metadata live behind backend routes and services.
+- Frontend-authoritative code:
+  - `src/` owns the React SPA, route shell, providers, tool UIs, feature modules, shared frontend services, and browser runtime adaptation.
+  - `src/features/*` is the canonical home for isolated tool modules.
+  - `src/components/`, `src/pages/`, and `src/hooks/` still contain both shared primitives and deliberate compatibility wrappers for older import paths.
+- Backend-authoritative code:
+  - `server.ts` and `server/` own auth/session validation, AI execution, billing, entitlements, admin APIs, document intake/extraction/artifact authority, monitoring, security headers, and deployment-aware runtime behavior.
+  - `server/documentRuntime/` is the canonical document processing and artifact authority layer.
+- Shared / cross-runtime contracts:
+  - `src/config/runtime.ts` mirrors deployment target behavior on the frontend.
+  - `server/runtimeConfig.ts` is the backend runtime/deploy-target authority.
+  - `src/upload/documentFilePolicy.ts` is the shared upload contract used by browser and backend flows.
+  - `src/types/`, `src/constants/`, and selected `src/services/*` modules provide cross-feature contracts.
+- Configuration / deployment layer:
+  - Root config files such as `firebase.json`, `netlify.toml`, `cloudbuild.yaml`, `Dockerfile`, `render.yaml`, `railway.toml`, `fly.toml`, `vercel.json`, and `deployment/runtime-manifest.json` define hosting/runtime behavior rather than app logic.
+- Sensitive ownership exceptions:
+  - `src/services/billing/paymentProviderAbstraction.ts` lives under `src/` but is explicitly backend-oriented and should be treated as server-side payment contract logic.
+  - `src/services/geminiService.ts` still exists, but core AI authority has shifted toward `src/ai/services/aiExecutor.ts` plus backend execution routes.
+- Current architecture direction:
+  - Feature-first frontend isolation is real but incomplete. Core tool routes are mostly under `src/features/*`, while some legacy page surfaces still live under `src/pages/` or wrapper files.
+  - `DocumentContext` is a frontend mirror and workspace convenience layer, not the sole backend source of truth for uploaded-document prompt context.
 
 ================================================================================
-4. BACKEND ARCHITECTURE
+4. CONFIGURATION, ENVIRONMENT, AND DEPLOYMENT FILES
 ================================================================================
-- Framework: Express.js (v4.21.2)
-- Entry Point: `server.ts`
-- Core Route Groups:
-  - `/api/ai/execute`: main AI tool execution path.
-  - `/api/documents/*`: owner-scoped document intake, artifact inspection, prompt-context resolution, cancellation, invalidation, and dormant direct-file-dispatch preparation.
-  - `/api/billing/*`: subscription, donation, unlock checkout, history, verification, and webhook flows.
-  - `/api/unlocks/*`: backend-authoritative unlock-code redemption flows.
-  - `/api/auth/fast-access/faculty-science/*`: temporary Faculty fast-access status, login, registration verification, and conversion flows.
-  - `/api/admin/*`: admin governance, account lifecycle, communication, code issuance, and entitlement workflows.
-  - `/api/notifications/*`: notification/email dispatch flows.
-- AI Orchestration:
-  - `server/promptOrchestrator.ts`: prompt assembly and structured schema generation.
-  - `server/aiProviders.ts` and `server/providerRuntime.ts`: provider execution contracts and runtime shaping.
-- Document Runtime:
-  - `server/documentRuntime/documentIntakeService.ts`: intake coordinator for owner-scoped source-file registration, local extraction, artifact creation, and active-runtime registration.
-  - `server/documentRuntime/documentArtifactStore.ts`: Firestore-backed document/artifact metadata authority.
-  - `server/documentRuntime/documentStorage.ts`: owner-scoped filesystem artifact/source workspace storage.
-  - `server/documentRuntime/runtimeStateService.ts`: Redis-first ephemeral coordination (active doc, op state, cancellation, locks) with local fallback for unprovisioned dev/CI environments.
-  - `server/documentRuntime/promptContextResolver.ts`: canonical owner-aware local-extraction resolver used by tool executions.
-  - `server/documentRuntime/directModelFileDispatchService.ts`: separate dormant direct-file-to-model preparation path.
-- Billing / Entitlements:
-  - `server/billingService.ts`: payment session creation, verification, and webhook processing.
-  - `server/toolEntitlementService.ts`, `server/modelEntitlementService.ts`, `server/entitlementContracts.ts`: backend-authoritative unlock and entitlement boundaries.
-- Provider Integrations: AI providers are centralized. Payment handling is not Stripe-only; the current codebase uses the platform billing abstraction in `src/services/billing/` and backend verification routes.
+- Core build/runtime files:
+  - `package.json`: scripts, dependency ranges, Node engine, deployment verification commands.
+  - `package-lock.json`: exact installed dependency graph. Use this for precise version audits.
+  - `vite.config.ts`: React + Tailwind Vite config, aliasing, HMR control, build chunking, ES2022 target, and production console stripping.
+  - `server.ts`: Express server entry, API route registration, auth middleware, local Vite integration, production static serving, and runtime startup logging.
+  - `deployment/runtime-manifest.json`: central runtime contract for Node/Python versions, healthcheck path, build output, worker paths, and supported deployment targets.
+- Environment/config files:
+  - `.env.example`: canonical environment-variable template for local/dev/prod configuration.
+  - `.env`: local runtime secrets and overrides. Treat as secret-bearing and environment-specific.
+  - `cloudrun.env`: Cloud Run deployment environment file containing production-oriented runtime settings and secrets. High risk.
+  - `.node-version`, `.nvmrc`, `.python-version`: runtime version hints for local/tooling environments.
+- Firebase config:
+  - `firebase.json`: Firebase Hosting config that serves `dist` and rewrites `/api/**` to Cloud Run service `zootopia-api`.
+  - `.firebaserc`: Firebase project alias mapping; current default project is `zootopia2026`.
+  - `firebase-applet-config.json`: frontend Firebase app configuration consumed by `src/firebase.ts`.
+  - `firebase-blueprint.json`: additional Firebase blueprint/config artifact kept at repo root.
+  - `firestore.rules`, `storage.rules`: active data/storage access-control policy files.
+- Hosting/container config:
+  - `netlify.toml`: frontend-only Netlify build/publish config. Points browser API traffic at the backend.
+  - `cloudbuild.yaml`: builds and deploys the backend container to Google Cloud Run.
+  - `Dockerfile`: production-capable Node 22 + Python 3.11 container build, installs Python extraction dependencies, verifies runtime contract, and starts `server.ts`.
+  - `render.yaml`, `railway.toml`, `fly.toml`, `vercel.json`: alternative deployment target configs already present in the repo.
+  - `Makefile`, `tools/setup-linux-server.sh`, `tools/start-linux-server.sh`, `tools/deploymentRuntime.mjs`: deployment/runtime helper tooling.
 
 ================================================================================
-5. TOOL / FEATURE INVENTORY
+5. KEY RUNTIME FILES AND INTEGRATION MAP
 ================================================================================
-- Assessment Tool: `src/features/assessment-tool/`
-  - Owns: `pages/AssessmentDashboard.tsx`, `components/AssessmentStudio.tsx`, `components/AnalysisLaunchCard.tsx`, `components/QuizResult.tsx`, `index.ts`
-  - Purpose: shared assessment landing flow, quiz generation, quiz results, and analysis launch UI.
-- File Analysis: `src/features/file-analysis/`
-  - Owns: `pages/AnalysisPage.tsx`, `components/DocumentAnalysisWorkspace.tsx`, `hooks/useDocumentAnalysisWorkspace.ts`, `index.ts`
-  - Purpose: document analysis route surface and workspace-specific analysis state.
-- Image Generator: `src/features/image-generator/`
-  - Owns: `pages/ImageGeneratorPage.tsx`, `index.ts`
-- Infographic Generator: `src/features/infographic-generator/`
-  - Owns: `pages/InfographicGeneratorPage.tsx`, `index.ts`
-- Chatbot: `src/features/chatbot/`
-  - Owns: `pages/ChatbotPage.tsx`, `index.ts`
-- Study Tools: `src/features/study-tools/`
-  - Owns: `pages/StudyToolsPage.tsx`, `index.ts`
-- Live Voice: `src/features/live-voice/`
-  - Owns: `pages/LiveVoicePage.tsx`, `index.ts`
-- Video Generator: `src/features/video-generator/`
-  - Owns: `pages/VideoGeneratorPage.tsx`, `index.ts`
-- Admin: `src/admin/`
-  - Remains isolated from user tool modules. Do not fold admin workflow code into `src/features/`.
-- Not yet feature-isolated but still active route/app surfaces:
+- App bootstrap and routing:
+  - `src/main.tsx` installs the startup guard and cross-origin API fetch bridge, then renders `<App />`.
+  - `src/App.tsx` owns the provider stack, protected-route shell, preview/payment verification handling, and workspace route mounting.
+  - `src/routing/workspaceRoutes.ts` is the canonical lazy route registry and preload map. Route ownership should be updated here, not scattered across feature code.
+- Frontend runtime providers:
+  - `src/auth/AuthContext.tsx` is the main auth/user/session/model/usage orchestration context and remains a high-coupling hotspot.
+  - `src/contexts/DocumentContext.tsx` holds frontend document runtime mirror state and must stay app-global.
+  - `src/notifications/NotificationContext.tsx`, `src/notifications/ToastProvider.tsx`, `src/themes/ThemeProvider.tsx`, and `src/contexts/LanguageContext.tsx` provide shell-wide concerns.
+- Auth/session flow:
+  - Frontend session lifecycle lives in `src/auth/session/*`, especially `sessionApi.ts`.
+  - Browser calls `/api/auth/session/bootstrap`, `/api/auth/session/refresh`, and `/api/auth/session/logout`.
+  - Backend authority lives in `server/authSessionService.ts` and `server/auth/*`, with Redis-backed or local fallback session coordination.
+- Document upload/extraction flow:
+  - `src/upload/FileUploader.tsx` and assessment/file-analysis entry points call `src/services/documentRuntimeService.ts`.
+  - The browser posts `POST /api/documents/intake` with bearer auth and document metadata headers.
+  - `server.ts` routes into `server/documentRuntime/documentIntakeService.ts`, which coordinates storage, extraction, artifact persistence, runtime state registration, and cleanup behavior.
+  - `server/documentRuntime/documentArtifactStore.ts` and `server/documentRuntime/promptContextResolver.ts` are the core document metadata/prompt-context authority.
+- AI/model flow:
+  - `src/ai/models/modelRegistry.ts` is the canonical model registry.
+  - `src/ai/services/aiRouter.ts` maps tool intents to AI execution plans.
+  - `src/ai/services/aiExecutor.ts` handles authorization, trace stages, provider dispatch, fallback, and backend execution routing.
+  - Backend execution flows through `/api/ai/authorize-model` and `/api/ai/execute`, then into `server/providerRuntime.ts`, `server/aiProviders.ts`, and `server/promptOrchestrator.ts`.
+- Admin flow:
+  - `src/admin/AdminPanel.tsx` is the main admin shell.
+  - `src/admin/components/*` hosts governance tools such as monitoring, refunds, codes, entitlement management, communication, stored-results exploration, and fast-access account management.
+  - Backend admin authority is exposed via `/api/admin/*` routes and implemented by services such as `adminAccountDirectoryService.ts`, `monitoringService.ts`, `codeService.ts`, `providerSecuritySummary.ts`, and admin route logic in `server.ts`.
+- Billing/results/communication flow:
+  - Billing UI starts in pages such as `src/pages/Billing.tsx`, `src/pages/Pricing.tsx`, and `src/pages/Donation.tsx`.
+  - Frontend service entry points include `src/services/billing/paymentService.ts`, `src/services/generatedAssetService.ts`, `src/services/resultService.ts`, and `src/services/communicationService.ts`.
+  - Backend authority for payments and payment effects lives in `server/billingService.ts`; communication/email dispatch lives in `server/communicationService.ts`.
+
+================================================================================
+6. VERIFIED PLATFORM SYSTEMS
+================================================================================
+- Auth / Session Architecture:
+  - Firebase Auth establishes browser identity, but platform session lifecycle is additionally managed through backend session APIs and `server/authSessionService.ts`.
+  - Supported auth modes are distinct: normal, fast-access, and admin.
+  - Session refresh invalidation is intentionally conservative on the frontend; transient failures should not casually wipe active sessions.
+  - Fast-access flows under `/api/auth/fast-access/faculty-science/*` are intentionally separate from the full-account lifecycle.
+- Document Runtime / Upload / Extraction Architecture:
+  - Upload policy is centralized in `src/upload/documentFilePolicy.ts`.
+  - Frontend uploads stream through `src/services/documentRuntimeService.ts`.
+  - Backend authority lives in `server/documentRuntime/*`, with layered responsibilities for file-type detection, extraction, OCR/native strategies, artifact storage, prompt-context assembly, cleanup, and runtime state coordination.
+  - Current extraction version in `server/documentRuntime/config.ts` is `2026.03.layered-runtime-v2`.
+  - The `direct_file_to_model` path exists in code but remains dormant compared with the active local-extraction pathway.
+- AI / Model / Orchestration Architecture:
+  - Gemini and Qwen providers are both wired.
+  - Model metadata and tool capability routing are centralized in `src/ai/models/modelRegistry.ts`, `src/ai/services/aiRouter.ts`, and `src/ai/services/aiExecutor.ts`.
+  - Backend execution is server-authoritative for provider credentials, usage logging, and model authorization.
+  - `src/ai/services/aiExecutor.ts` still contains a deliberate frontend Gemini path for explicit user-supplied API keys; standard platform flow remains backend-managed.
+  - Prompt orchestration remains cross-cutting; `server/promptOrchestrator.ts` currently acts as a backend boundary/re-export rather than a totally separate implementation.
+- Admin System Architecture:
+  - Admin UI remains isolated under `src/admin/`.
+  - The admin shell currently covers user/admin lifecycle, fast-access accounts, monitoring, codes, refunds, donations, communications, stored results, and entitlement management.
+  - Admin-sensitive backend helpers include `adminAccountDirectoryService.ts`, `providerSecuritySummary.ts`, `monitoringService.ts`, and route-level admin checks in `server.ts`.
+- Billing / Payments / Entitlements Architecture:
+  - Billing is backend-authoritative.
+  - Providers currently represented in the frontend abstraction are Paymob, FawryPay, and EasyKash.
+  - `server/billingService.ts` handles checkout creation, payment verification, refunds, webhook processing, and payment-side effects such as subscriptions and unlocks.
+  - Tool/model/page unlocks and related code redemption are intentionally routed through backend entitlement and billing services.
+- Communication / Notification Architecture:
+  - User/admin messaging data is stored in Firestore-facing services under `src/services/communicationService.ts` and related helpers.
+  - Unified email send endpoints exist under `/api/admin/email/*`, backed by `server/communicationService.ts` and Nodemailer.
+  - Notification/inbox behavior spans `src/notifications/*`, Firestore collections, and `/api/notifications/*` routes.
+- Results / Assets / Preview Architecture:
+  - Generated asset metadata lives through `src/services/generatedAssetService.ts` and related metadata helpers, with owner-scoped content delivery via `/api/assets/:assetId/content`.
+  - Result persistence and export are handled by `src/services/resultService.ts`, `src/services/resultExportService.ts`, `src/components/status/*`, and `src/pages/DetachedResultPreviewPage.tsx`.
+
+================================================================================
+7. FEATURE / TOOL INVENTORY
+================================================================================
+- Assessment dashboard and quiz flow:
+  - `src/features/assessment-tool/`
+  - Owns the `/generate` assessment landing experience, upload-first workflow, quiz generation UI, and analysis launch handoff.
+- File analysis workspace:
+  - `src/features/file-analysis/`
+  - Owns dedicated document analysis route/page behavior and normalized analysis result presentation.
+- Chatbot:
+  - `src/features/chatbot/`
+  - Chat UI can consume current document context and model selection.
+- Image generation:
+  - `src/features/image-generator/`
+  - Generates images, stores generated assets, and connects into the editor/results flows.
+- Infographic generation:
+  - `src/features/infographic-generator/`
+  - Handles infographic prompt/data generation, preview/export, and optional image generation helpers.
+- Study tools:
+  - `src/features/study-tools/`
+  - Hosts summary/flashcard/mind-map/concept/note-style workflows with per-tool prompt orchestration.
+- Live voice:
+  - `src/features/live-voice/`
+  - Voice-session UI and transcript/export flows.
+- Video generation:
+  - `src/features/video-generator/`
+  - Current page exists, but real backend generation is intentionally not fully enabled; the code prefers an honest "not live" state over fake success behavior.
+- Admin workspace:
+  - `src/admin/`
+  - Separate admin shell with monitoring, codes, communications, refunds, donations, accounts, entitlements, and stored-result tooling.
+- Still-active non-feature-isolated surfaces:
   - `src/pages/Projects.tsx`
   - `src/pages/ImageEditorPage.tsx`
   - `src/pages/ResultsLibraryPage.tsx`
+  - `src/pages/Account.tsx`
+  - `src/pages/Billing.tsx`
+  - `src/pages/Pricing.tsx`
+  - `src/pages/Donation.tsx`
+  - `src/pages/Settings.tsx`
+  - `src/pages/CommunicationCenterPage.tsx`
   - `src/components/UserHistory.tsx`
-  - `src/pages/Account.tsx`, `src/pages/Billing.tsx`, `src/pages/Pricing.tsx`, `src/pages/Donation.tsx`, `src/pages/Settings.tsx`, `src/pages/CommunicationCenterPage.tsx`
-- Shared File Processing:
-  - `src/upload/documentFilePolicy.ts`
-  - `src/upload/FileUploader.tsx`
-  - `src/utils/fileProcessors.ts`
-  - `src/contexts/DocumentContext.tsx`
-  - `src/services/documentRuntimeService.ts`
-  - `server/documentRuntime/*`
 
 ================================================================================
-6. MODEL / AI SYSTEM NOTES
+8. SENSITIVE / HIGH-RISK FILES AND DO-NOT-CHANGE-CASUALLY AREAS
 ================================================================================
-- Providers: Google (Gemini), Qwen.
-- Registry: `src/ai/models/modelRegistry.ts` is the definitive list of available models, their capabilities (e.g., `supportsQuizGeneration`, `supportsInfographicWorkflows`), and priority.
-- Routing Logic: `AIRouter` (`src/ai/services/aiRouter.ts`) maps tool requests to specific prompt builders and selects the best model based on required capabilities.
-- Execution & Fallback: `AIExecutor` (`src/ai/services/aiExecutor.ts`) handles API calls and implements a fallback mechanism. If a primary model fails, it automatically attempts the request with the next highest-priority compatible model.
-- Frontend Mapping: `src/constants/aiModels.ts` maps the backend registry to the frontend `AIModel` interface for use in `ModelSelector`.
-- Ownership Rule: global provider/model routing stays centralized in `src/ai/` and `server/`. Tool-specific prompt builders, payload shaping, and result parsers should live in the owning feature module once extracted, unless they are truly cross-tool.
+- `server.ts`
+  - Central backend entrypoint. Route wiring, CORS, auth middleware, AI execution, document runtime, billing, admin routes, local Vite integration, and production static serving all converge here.
+- `src/auth/AuthContext.tsx`
+  - Large, high-coupling frontend auth/user/session/model orchestration file. Casual refactors can break login, session refresh, usage state, and admin/fast-access behavior simultaneously.
+- `server/authSessionService.ts` and `server/auth/*`
+  - Backend session authority. Changes here directly affect session expiry, auth mode separation, invalidation, and document-runtime scoping.
+- `server/documentRuntime/*`
+  - Treat as backend-authoritative document ingestion/extraction/storage context. In particular: `documentIntakeService.ts`, `documentArtifactStore.ts`, `promptContextResolver.ts`, `runtimeStateService.ts`, and `config.ts`.
+- `src/ai/models/modelRegistry.ts` and `src/ai/services/aiExecutor.ts`
+  - Registry and execution center for model availability, routing, fallback, authorization, and provider dispatch behavior.
+- `server/billingService.ts` plus entitlement services
+  - Backend-authoritative payment side effects, unlock grants, refunds, and verification behavior.
+- `src/services/billing/paymentProviderAbstraction.ts`
+  - Path is misleading. It is backend-sensitive payment contract logic and should not be treated like ordinary browser-only code.
+- `firestore.rules` and `storage.rules`
+  - Security-critical access-control policy. Do not make convenience edits here without tracing user/admin/owner implications.
+- `.env`, `cloudrun.env`, `serviceAccountKey.json`
+  - Secret-bearing files. `cloudrun.env` and `serviceAccountKey.json` are especially sensitive and should not be exposed, rewritten casually, or copied into docs/logs.
+- `runtime/document-workspaces/`
+  - Contains live local document-runtime workspaces and potentially user/admin file artifacts. Do not treat as a harmless scratch folder.
+- Compatibility wrappers under `src/components/`, `src/pages/AnalysisPage.tsx`, and `src/hooks/useDocumentAnalysisWorkspace.ts`
+  - They may look redundant, but they still protect import compatibility during the feature-first migration.
 
 ================================================================================
-7. DATABASE / AUTH / USER SYSTEM NOTES
+9. CURRENT DEPLOYMENT TARGETS AND RUNTIME RELATIONSHIPS
 ================================================================================
-- Authentication: Firebase Auth (Google OAuth, Email/Password).
-- Database: Firestore (`users` collection).
-- Roles: User, Admin (Primary/Secondary). Managed via Firebase Custom Claims.
-- Credit System:
-  - Free tier: 3 credits/day.
-  - Pro tier: Unlimited.
-  - Daily reset logic is evaluated client-side in `AuthContext.tsx` upon initialization.
-- Usage Tracking: Tracks `aiRequestsToday`, `quizGenerationsToday`, `uploadsToday`.
-- Fast Access: temporary Faculty fast-access auth/account-completion flows are backend-authoritative under `/api/auth/fast-access/faculty-science/*` and remain highly sensitive.
-- Entitlements / Unlocks: tool/model/page unlock grants are governed through backend entitlement and billing routes; avoid reintroducing direct frontend entitlement writes.
+- Local integrated runtime:
+  - `npm run dev` and `npm run start` both execute `tsx server.ts`.
+  - In non-production, `server.ts` mounts Vite middleware and serves both API and SPA from the same process.
+  - `.env` and `.env.example` define local runtime variables; local document extraction can use the Python virtual environment.
+- Firebase Hosting + Cloud Run:
+  - `firebase.json` serves the built SPA from `dist`.
+  - `/api/**` is rewritten to Cloud Run service `zootopia-api` in `us-central1`.
+  - `cloudbuild.yaml` and `Dockerfile` define the backend container build/deploy path used by Cloud Run.
+- Netlify + backend API split:
+  - `netlify.toml` is explicitly frontend-only.
+  - Browser API traffic is redirected via `VITE_API_BASE_URL`, with `src/config/runtime.ts` rewriting relative `/api/*` requests when the frontend is cross-origin from the API.
+- Vercel:
+  - `vercel.json` is a static/frontend deployment config for the built Vite app. It does not replace the backend API runtime.
+- Render / Railway / Fly / Docker / generic Linux:
+  - `render.yaml`, `railway.toml`, `fly.toml`, `Dockerfile`, and helper scripts under `tools/` provide alternative backend-capable deployment paths already scaffolded in the repo.
+- Central deployment contract:
+  - `deployment/runtime-manifest.json` is the best single-file summary of supported runtime targets and should stay aligned with deployment configs and the Docker build.
 
 ================================================================================
-8. TECHNOLOGIES / LIBRARIES / DEPENDENCIES
+10. FUTURE DEVELOPER / AGENT GUIDANCE
 ================================================================================
-- Frontend Core: React (19.0.0), React Router DOM (7.13.1), Vite (6.2.0), Tailwind CSS (4.1.14)
-- Backend Core: Express (4.21.2), tsx (4.21.0)
-- Runtime Coordination: redis (4.7.1) for backend document-runtime coordination and actor-scoped ephemeral state.
-- AI SDKs: @google/genai (1.29.0)
-- Database/Auth: firebase (12.10.0), firebase-admin (13.7.0), @react-oauth/google (0.13.4)
-- Billing / Payments: internal provider abstraction under `src/services/billing/` with adapters for EasyKash, FawryPay, and Paymob. The current `package.json` does not include Stripe packages.
-- Emails: nodemailer (8.0.2)
-- UI/UX: lucide-react (0.546.0), motion (12.23.24), react-hot-toast (2.6.0), react-markdown (10.1.0), recharts (3.8.0), canvas-confetti (1.9.4)
-- File Processing/Export: pdfjs-dist (5.5.207), mammoth (1.11.0), docx (9.6.1), html2canvas (1.4.1), jspdf (4.2.1), jspdf-autotable (5.0.7), xlsx (0.18.5), file-saver (2.0.5)
-- i18n: i18next (25.8.18), i18next-browser-languagedetector (8.2.1), react-i18next (16.5.8)
+- Put new tool-specific UI/state/prompt-shaping code inside `src/features/<tool>/` first. Do not expand legacy wrapper files unless the change is explicitly about compatibility.
+- Keep backend authority on the backend:
+  - auth/session validation
+  - billing/payment effects
+  - entitlements/unlocks
+  - provider credentials and AI execution authority
+  - owner-scoped document artifacts and prompt-context resolution
+- When changing deployment behavior, review both `src/config/runtime.ts` and `server/runtimeConfig.ts` together.
+- Do not casually remove compatibility bridge files. Verify the import graph first.
+- Treat `AuthContext.tsx`, `server.ts`, model registry/executor files, billing services, and document-runtime services as staged-refactor territory, not opportunistic cleanup targets.
+- `DocumentProvider` must remain app-global unless the backend document-runtime model is redesigned. Uploaded files are intentionally shared resources across tools.
+- Keep admin code isolated under `src/admin/` and admin backend routes/services. Do not mix it into normal-user feature folders.
+- Preserve honest product state:
+  - The current video generator is intentionally not pretending to have a full live backend.
+  - Dormant codepaths such as direct file-to-model document dispatch should remain clearly marked until explicitly activated end-to-end.
+- Maintain deployment alignment:
+  - Firebase Hosting rewrite target names must stay aligned with the Cloud Run service name.
+  - Environment files, runtime manifest, and container/runtime scripts should be updated together.
+- Continue the feature-first migration carefully:
+  - Remaining route-heavy surfaces such as image editor, results library, projects, billing/account pages, and user history are still good candidates for future ownership cleanup.
+  - Refactoring `AuthContext.tsx` into smaller context boundaries remains a real maintainability opportunity, but it should be planned, not improvised.
 
 ================================================================================
-9. CURRENT SYSTEM BEHAVIOR NOTES
+11. GROUPED FILE INDEX / TREE SNAPSHOT
 ================================================================================
-- Architecture: Single-Page Application (SPA) using URL-based routing through `BrowserRouter` and `workspaceRoutes.ts`.
-- Feature Isolation: core tool route-entry ownership now lives under `src/features/*`. Legacy tool-entry files at old paths remain as compatibility adapters only.
-- State Coupling: `AuthContext.tsx` is a massive "god object" handling auth, user profiles, credit limits, daily resets, and AI model state.
-- AI Execution Flow: UI Component -> `AIRouter` -> `AIExecutor` -> `/api/ai/execute` -> `PromptOrchestrator` -> Provider (Gemini/Qwen).
-- File Upload Flow:
-  - The upload hero still starts from the React UI, but the authoritative path is now:
-    UI -> `src/services/documentRuntimeService.ts` -> `/api/documents/intake` -> `server/documentRuntime/documentIntakeService.ts` -> owner-scoped source/artifact persistence -> runtime registration -> `DocumentContext` mirror sync.
-  - `DocumentContext` still exposes extracted text and file metadata for compatibility/UI continuity, but document-aware AI executions can now send `documentContextRef` so the backend resolves prompt context from owner-scoped artifacts instead of trusting raw browser state as the system of record.
-  - Default active pathway is `local_extraction`. Separate `direct_file_to_model` preparation contracts exist but remain dormant/inactive unless explicitly enabled later.
-- Popup / Attention Flow: major blocking overlays now route through shared popup orchestration (`src/orchestration/popupFlow.ts`, `src/contexts/PopupOrchestratorContext.tsx`) so welcome, account-completion, and other major modals do not compete.
-- Billing / Unlock Flow: payment verification and entitlement grants are backend-authoritative. Frontend surfaces should consume the backend APIs rather than writing unlock state directly.
-
-================================================================================
-10. SUGGESTED IMPROVEMENTS
-================================================================================
-- Architecture: Continue the feature-first migration for remaining route-heavy surfaces such as `ImageEditorPage`, `ResultsLibraryPage`, `UserHistory`, and other tool-like experiences that still live outside `src/features/`.
-- Document Runtime: Provision Redis 8.6.x in the target environment, then evaluate lifting heavy extraction/OCR work into dedicated workers/BullMQ only when the platform introduces a worker process or long-running extraction jobs that justify queue orchestration.
-- Maintainability: Refactor `AuthContext.tsx` (800+ lines). Split into `UserContext`, `CreditContext`, and `ModelContext` to reduce coupling and re-renders.
-- Migration Hygiene: Retire compatibility re-export files only after the full import graph has been audited. Do not delete them opportunistically during unrelated work.
-- Shared Layer Discipline: Introduce a dedicated `shared/` root only if real ownership justifies it. Do not create a dump folder that hides feature boundaries.
-- Security: Ensure all AI execution logic is fully migrated to the backend. Legacy frontend service paths such as `geminiService.ts` should continue moving behind backend authority where practical.
-- Performance: Implement a caching layer in `AIExecutor` or the backend for identical prompts (especially large document analysis) to save credits and reduce latency.
-- UX: Enhance error mapping to provide specific feedback (e.g., "Content Policy Violation" vs. "Rate Limit Exceeded") instead of generic failures.
-
-================================================================================
-11. PROJECT MAINTENANCE NOTES
-================================================================================
-- SENSITIVE: `AuthContext.tsx` - Modifying this file risks breaking authentication, credit tracking, and model selection simultaneously. Proceed with extreme caution.
-- COUPLING RISK: The `MODEL_REGISTRY` (`src/ai/models/modelRegistry.ts`) must always be kept perfectly in sync with the frontend mapping (`src/constants/aiModels.ts`). If a capability is added to the backend registry, it MUST be mapped in the frontend constants, or UI filtering (like `ModelSelector`) will fail.
-- SENSITIVE: `server/promptOrchestrator.ts` - Changes to JSON schemas here must be strictly mirrored by the frontend components parsing the responses.
-- CANONICAL FEATURE OWNERSHIP:
-  - `src/features/*` is now the canonical home for the isolated core tool surfaces.
-  - `src/components/*`, `src/pages/AnalysisPage.tsx`, and `src/hooks/useDocumentAnalysisWorkspace.ts` tool-entry files that now re-export from `src/features/*` are compatibility bridges, not the long-term ownership target.
-  - New tool-specific code should start inside the owning feature folder, not in a legacy wrapper file.
-- SHARED VS GLOBAL VS FEATURE RULES:
-  - Feature-owned: tool-specific pages, UI, hooks, local state, adapters, validators, prompt builders, and result shaping that belong to one tool.
-  - Shared reusable: app-shell primitives, upload primitives, status UI, notifications, theme/language, generic services, common types/constants, and utilities genuinely used by multiple areas.
-  - Global/core: auth, AI provider/router/model systems, billing, entitlement governance, route shell, popup orchestration, admin governance, and backend contracts.
-- CANONICAL MOVE MAP (post-2026-03-26):
-  - `src/components/Dashboard.tsx` -> `src/features/assessment-tool/pages/AssessmentDashboard.tsx`
-  - `src/components/AssessmentStudio.tsx` -> `src/features/assessment-tool/components/AssessmentStudio.tsx`
-  - `src/components/AnalysisLaunchCard.tsx` -> `src/features/assessment-tool/components/AnalysisLaunchCard.tsx`
-  - `src/components/assessment/QuizResult.tsx` -> `src/features/assessment-tool/components/QuizResult.tsx`
-  - `src/pages/AnalysisPage.tsx` -> `src/features/file-analysis/pages/AnalysisPage.tsx`
-  - `src/components/analysis/DocumentAnalysisWorkspace.tsx` -> `src/features/file-analysis/components/DocumentAnalysisWorkspace.tsx`
-  - `src/hooks/useDocumentAnalysisWorkspace.ts` -> `src/features/file-analysis/hooks/useDocumentAnalysisWorkspace.ts`
-  - `src/components/ImageGenerator.tsx` -> `src/features/image-generator/pages/ImageGeneratorPage.tsx`
-  - `src/components/InfographicGenerator.tsx` -> `src/features/infographic-generator/pages/InfographicGeneratorPage.tsx`
-  - `src/components/Chatbot.tsx` -> `src/features/chatbot/pages/ChatbotPage.tsx`
-  - `src/components/StudyTools.tsx` -> `src/features/study-tools/pages/StudyToolsPage.tsx`
-  - `src/components/LiveVoice.tsx` -> `src/features/live-voice/pages/LiveVoicePage.tsx`
-  - `src/components/VideoGenerator.tsx` -> `src/features/video-generator/pages/VideoGeneratorPage.tsx`
-- COMPATIBILITY NOTES:
-  - Legacy wrapper paths still exist intentionally to protect backward compatibility during migration.
-  - Route ownership should prefer `src/features/*` and `src/routing/workspaceRoutes.ts` rather than importing wrappers from old locations.
-  - Historical change-log entries before or during the migration may mention the wrapper paths that existed at the time. When in doubt, trust the current ownership map above and verify the real file.
-- FUTURE CONTRIBUTION RULES:
-  - Add new tool logic inside the relevant `src/features/<tool>/` folder first.
-  - Only move code into shared/global folders when at least two real owners need it and the abstraction is stable.
-  - Keep admin code isolated under `src/admin/`.
-  - Keep global AI provider execution, auth, billing, entitlements, routing shell, and popup orchestration centralized unless a carefully staged migration is planned.
-  - Prefer adapters/re-exports over abrupt moves when a path is heavily imported.
+- Root:
+  - `package.json`, `package-lock.json`, `tsconfig.json`, `vite.config.ts`
+  - `server.ts`
+  - `firebase.json`, `.firebaserc`, `firestore.rules`, `storage.rules`
+  - `netlify.toml`, `cloudbuild.yaml`, `Dockerfile`, `render.yaml`, `railway.toml`, `fly.toml`, `vercel.json`
+  - `.env.example`, `.env`, `cloudrun.env`
+  - `firebase-applet-config.json`, `firebase-blueprint.json`, `serviceAccountKey.json`
+  - `deployment/runtime-manifest.json`
+  - `ZOOTOPIA_PROJECT_LEDGER.txt`
+- Frontend app (`src/`):
+  - Core entry: `main.tsx`, `App.tsx`, `firebase.ts`, `index.css`
+  - Feature modules: `features/assessment-tool`, `features/chatbot`, `features/file-analysis`, `features/image-generator`, `features/infographic-generator`, `features/live-voice`, `features/study-tools`, `features/video-generator`
+  - Global systems: `auth/`, `ai/`, `admin/`, `contexts/`, `notifications/`, `themes/`, `routing/`, `orchestration/`, `config/`
+  - Shared layers: `components/`, `pages/`, `services/`, `upload/`, `utils/`, `constants/`, `types/`, `i18n/`, `bootstrap/`
+- Frontend auth/session files:
+  - `src/auth/AuthContext.tsx`
+  - `src/auth/session/adminAuthSessionManager.ts`
+  - `src/auth/session/fastAccessAuthSessionManager.ts`
+  - `src/auth/session/normalAuthSessionManager.ts`
+  - `src/auth/session/sessionApi.ts`
+- Frontend AI files:
+  - `src/ai/config/providerConfig.ts`, `src/ai/config/timeoutBudgets.ts`
+  - `src/ai/models/modelRegistry.ts`
+  - `src/ai/providers/geminiProvider.ts`, `src/ai/providers/qwenProvider.ts`, `src/ai/providers/providerRegistry.ts`
+  - `src/ai/services/aiExecutor.ts`, `src/ai/services/aiRouter.ts`, `src/ai/services/cacheService.ts`, `src/ai/services/masterConnectionSystem.ts`, `src/ai/services/promptOrchestrator.ts`
+- Frontend admin files:
+  - `src/admin/AdminPanel.tsx`
+  - `src/admin/components/MonitoringView.tsx`, `FastAccessAccountsManager.tsx`, `RefundsView.tsx`, `DonationsView.tsx`, `StoredResultsExplorer.tsx`, `ToolEntitlementsManager.tsx`, `ModelEntitlementsManager.tsx`, `CommunicationCenter.tsx`, `EmailCenter.tsx`, `CodeManager.tsx`, `GiftCodeManager.tsx`, `SecretCodeManager.tsx`, `UnlockCodeManager.tsx`
+  - `src/admin/services/providerSecuritySummaryService.ts`
+- Backend (`server/`):
+  - Core services: `authSessionService.ts`, `billingService.ts`, `communicationService.ts`, `monitoringService.ts`, `codeService.ts`, `providerRuntime.ts`, `aiProviders.ts`, `promptOrchestrator.ts`, `securityHeaders.ts`, `runtimeConfig.ts`
+  - Auth helpers: `auth/authSessionService.ts`, `auth/sessionCookies.ts`, `auth/sessionTypes.ts`
+  - Cache helpers: `cache/namespaces.ts`, `cache/redisBackedStore.ts`, `cache/sharedRedis.ts`
+  - Document runtime: `documentRuntime/config.ts`, `documentRuntime/documentIntakeService.ts`, `documentRuntime/documentArtifactStore.ts`, `documentRuntime/documentStorage.ts`, `documentRuntime/runtimeStateService.ts`, `documentRuntime/promptContextResolver.ts`, `documentRuntime/promptContextAssembler.ts`, `documentRuntime/extractionCoordinator.ts`, `documentRuntime/nativeExtractionService.ts`, `documentRuntime/ocrExtractionService.ts`, `documentRuntime/pythonDocumentWorker.ts`, `documentRuntime/python/extract_document.py`
+- Runtime/generated state:
+  - `runtime/document-workspaces/`
+  - `runtime/verification/`
+  - `runtime/verification-native/`
+  - `dist/`
+  - local logs and verification outputs at repo root
+- Public/test/supporting assets:
+  - `public/` static assets
+  - `tests/` focused coverage for auth sessions, admin accounts, model routing, document runtime, generated assets, security hardening, prompt orchestration, popup flow, and unlock behavior
 ================================================================================
 12. CHANGE LOG / MODIFICATION HISTORY
 - 2026-03-22: Added backend-authoritative admin lifecycle management for Faculty fast-access accounts.
@@ -5792,3 +5890,311 @@ pm run build\ successfully.
     - unrelated admin panel feature routes outside the login/session entry path
   - Focused verification completed with:
     - `node_modules\.bin\tsx.cmd --test tests\adminAccountDirectoryService.test.ts tests\errorClassification.test.ts`
+
+[2026-03-28]
+- Area: Runtime Configuration / Local Timeout Hardening / Multi-Target Deployment Clarity
+- Files: /src/config/runtime.ts, /server/runtimeConfig.ts, /src/main.tsx, /src/firebase.ts, /src/auth/AuthContext.tsx, /src/auth/Login.tsx, /src/auth/hooks/useAuthActions.ts, /src/auth/session/sessionApi.ts, /src/bootstrap/installStartupGuard.ts, /src/components/LazyWorkspaceRouteBoundary.tsx, /src/features/assessment-tool/pages/AssessmentDashboard.tsx, /src/pages/Pricing.tsx, /src/pages/Donation.tsx, /src/components/Sidebar.tsx, /src/components/ModelSelector.tsx, /src/services/billing/paymentProviderAbstraction.ts, /server.ts, /.env.example, /netlify.toml, /cloudrun.env, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Centralized runtime-sensitive frontend/backend configuration, relaxed the most failure-prone local timeout budgets for weak-machine development, and made the deployment split between local dev, Firebase Hosting, Netlify, and Cloud Run explicit without rewriting the existing architecture.
+- Reason: The repo already had a deployment manifest, but live runtime behavior was still scattered across hardcoded browser origins, short fixed startup/auth budgets, and same-origin `/api/*` assumptions. That worked for local integrated dev and Firebase Hosting rewrites, but it was fragile on slow local hardware and unclear for Netlify -> Cloud Run cross-origin operation.
+- Technical Details:
+  - Added `src/config/runtime.ts` as the frontend runtime authority for:
+    - deployment-target detection (`local`, `firebase_hosting`, `netlify`, `cloud_run`)
+    - centralized public-app/API URL resolution
+    - environment-aware timeout profile resolution
+    - a scoped `/api/*` fetch bridge that rewrites legacy relative API calls only when `VITE_API_BASE_URL` is configured for a separately hosted frontend
+  - Relaxed the local-sensitive browser budgets through centralized runtime imports while preserving production behavior:
+    - auth session API timeout: `12s -> 20s` locally
+    - auth initial resolution timeout: `15s -> 24s` locally
+    - auth profile sync timeout: `12s -> 18s` locally
+    - identifier/admin-claims lookup timeouts: `8s -> 15s` locally
+    - admin login timeout: `15s -> 24s` locally
+    - startup fallback timeout: `18s -> 32s` locally
+    - lazy route load timeout: `12s -> 22s` locally
+    - upload preparation base timeout: `90s -> 120s` locally
+  - Kept the local timeout behavior backward-compatible by defaulting to a relaxed profile only for detected local runtime, with optional override via `VITE_RUNTIME_TIMEOUT_PROFILE`.
+  - Added `server/runtimeConfig.ts` to centralize backend deployment-sensitive values:
+    - resolved public frontend URL from `APP_URL`
+    - resolved backend deployment target (`local` / `cloud_run`)
+    - parsed centralized cross-origin allowlist from `CORS_ALLOWED_ORIGINS`
+  - Hardened `server.ts` with centralized CORS handling for configured browser origins:
+    - local integrated development still works same-origin with no extra setup
+    - Firebase Hosting still works via existing `/api/**` rewrite behavior
+    - Netlify can now call Cloud Run cleanly when `VITE_API_BASE_URL` targets the backend and Cloud Run includes the frontend origin in `CORS_ALLOWED_ORIGINS`
+  - Replaced scattered `window.location.origin` callback construction in billing/unlock flows with centralized `buildAppUrl(...)` helpers so redirects stay coherent across local, Firebase Hosting, Netlify, and Cloud Run-served frontend variants.
+  - Clarified deployment/env contracts:
+    - `.env.example` now documents `DEPLOY_TARGET`, `VITE_DEPLOY_TARGET`, `VITE_PUBLIC_APP_URL`, `VITE_API_BASE_URL`, `VITE_RUNTIME_TIMEOUT_PROFILE`, and `CORS_ALLOWED_ORIGINS`
+    - `netlify.toml` now declares `VITE_DEPLOY_TARGET=netlify` and pins the current Cloud Run backend URL for Netlify builds in one centralized place
+    - `cloudrun.env` now declares `DEPLOY_TARGET=cloud_run` and includes the active Firebase Hosting + Netlify origins in `CORS_ALLOWED_ORIGINS`
+  - Preserved the existing deployment architecture:
+    - local dev remains integrated frontend + backend via `tsx server.ts`
+    - Firebase Hosting remains same-origin from the browser perspective via `/api/**` rewrite to Cloud Run
+    - Netlify remains frontend-only and now uses explicit cross-origin backend routing
+    - Cloud Run remains backend-capable and uses `APP_URL` as the public frontend origin for login/payment return links
+- Risks / Dependencies:
+  - Netlify browser-to-Cloud-Run requests now depend on `VITE_API_BASE_URL` and `CORS_ALLOWED_ORIGINS` staying aligned with the active backend/frontend hosts.
+  - `APP_URL` must remain the public frontend origin, not the Cloud Run URL, or payment/email return links will point users at the wrong surface.
+  - Repository-wide `npm run lint` still reports unrelated pre-existing TypeScript errors outside this scope (for example in `CommunicationCenter.tsx`, `App.tsx`, `ResultPreviewContent.tsx`, `emailDeliveryService.ts`, and `exporters.ts`); no new errors from the touched runtime files were surfaced in that run.
+- Notes:
+  - Preserved:
+    - auth/session architecture
+    - admin vs user vs fast-access separation
+    - document runtime ownership and contracts
+    - AI execution architecture and backend timeouts
+    - Firebase Hosting rewrite model
+    - local integrated workflow
+  - Intentionally left untouched:
+    - broad billing provider refactors
+    - existing deployment manifest structure
+    - unrelated admin/UI type errors already present in the repository
+  - Verification:
+    - `npm run lint` was run after the change set; it still fails only on unrelated pre-existing repository errors outside the touched runtime/config files.
+
+[2026-03-29]
+- Area: Local Runtime Clarity / Startup Diagnostics
+- Files: /server.ts, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Confirmed that the intended local development architecture is still the integrated server-driven flow (`npm run dev -> tsx server.ts`) and added clearer startup diagnostics instead of restructuring the runtime.
+- Reason: The current codebase already supports local backend mode, embedded Vite development, and local Python extraction. The remaining practical gap was clarity: on startup it was not explicit enough which URL to open, whether the frontend had a distinct local origin, and which runtime/deployment mode was active.
+- Technical Details:
+  - Re-audited the actual local runtime path:
+    - `package.json` keeps `npm run dev` and `npm run start` pointed at `tsx server.ts`
+    - `server.ts` mounts Vite middleware directly into Express when `NODE_ENV !== 'production'`
+    - no separate frontend localhost origin is required in the intended local architecture
+    - `server/documentRuntime/config.ts` still auto-detects a repo-local `.venv` / active virtualenv Python executable and preserves local memory fallback behavior when Redis is absent
+  - Updated `server.ts` startup logging to print:
+    - active runtime mode / deploy target
+    - local backend URL
+    - frontend URL guidance without inventing a second frontend origin when the SPA is served through the same integrated Express + Vite runtime
+    - public app URL
+    - Python extraction enabled/disabled status and executable path
+    - Python worker script path
+    - document storage root
+    - document-runtime fallback mode
+    - allowed origin list
+- Risks / Dependencies:
+  - This is a diagnostics-only change and depends on the existing runtime config introduced previously (`server/runtimeConfig.ts`) plus current document runtime config exports.
+  - Live local startup verification in this Codex environment is limited because `npm run dev` currently fails here with a sandbox/process-level `tsx/esbuild spawn EPERM`, which is an execution-environment limitation rather than an application-logic regression.
+- Notes:
+  - Preserved intentionally:
+    - current `npm run dev` local workflow
+    - integrated local server model
+    - local backend + local Python extraction support
+    - Firebase Hosting + Cloud Run deployment shape
+    - Netlify + Cloud Run deployment shape
+    - auth/session/admin/user/fast-access separation
+  - Intentionally did not:
+    - split local dev into frontend/backend ports
+    - introduce another env/config abstraction layer
+    - modify timeout budgets again
+    - alter API contracts, auth flows, or document runtime execution behavior
+
+[2026-03-29]
+- Area: Local Upload/Auth Recovery Hardening
+- Files: /src/auth/AuthContext.tsx, /src/utils/authHeaders.ts, /src/services/documentRuntimeService.ts, /src/features/assessment-tool/pages/AssessmentDashboard.tsx, /server.ts, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Fixed a local upload-triggered false logout/recovery bug by tightening auth-session refresh invalidation rules and adding targeted diagnostics across upload, document intake, and auth refresh paths.
+- Reason: During real local use, selecting/uploading a file could trigger a focus/visibility re-entry refresh while the integrated runtime was busy. The frontend refresh path was incorrectly signing users out on transient timeout/session-worded errors instead of only on verified auth invalidation.
+- Technical Details:
+  - Root cause / exact failing stage:
+    - `src/auth/AuthContext.tsx` re-entry refresh (`window.focus` / `visibilitychange`) called `refreshActiveAuthSession('refresh')` while upload/document intake was underway.
+    - The refresh catch path treated any error message containing `session`, `sign in`, or `authentication` as a real invalid session.
+    - Transient local failures such as `Session refresh timed out.` or `Missing authenticated session token.` could therefore trigger `signOut(auth)` + `clearSessionState(...)`.
+    - After that false invalidation, `ProtectedRoute` redirected the user to `/login`, and the app could fall into the visible startup/error recovery surface instead of keeping the upload error localized.
+  - Fix applied:
+    - Replaced broad message-regex invalidation in `src/auth/AuthContext.tsx` with explicit refresh-failure classification.
+    - Session clear/sign-out now occurs only for verified auth/session invalidation conditions:
+      - `SESSION_EXPIRED`
+      - `SESSION_MAX_LIFETIME_EXCEEDED`
+      - `SESSION_INVALIDATED`
+      - `SESSION_MISSING`
+      - `AUTH_MODE_MISMATCH`
+      - explicit `401` / `403` refresh responses
+    - Transient/unverified refresh failures now preserve the active session and only record diagnostics instead of kicking the user to login.
+  - Diagnostics added:
+    - `src/auth/AuthContext.tsx`:
+      - re-entry refresh trigger source (`focus` vs `visibilitychange`)
+      - refresh failure disposition (`verified_invalid` vs transient preserve)
+      - timeout budget in use
+    - `src/utils/authHeaders.ts`:
+      - bearer-header request / missing-token diagnostics without logging secrets
+    - `src/services/documentRuntimeService.ts`:
+      - intake request start / completion / failure logs
+    - `src/features/assessment-tool/pages/AssessmentDashboard.tsx`:
+      - upload start and preparation failure logs with auth/session snapshot
+    - `server.ts`:
+      - request-context auth rejection diagnostics
+      - `/api/documents/intake` start / completion / failure diagnostics
+- Risks / Dependencies:
+  - Preserves backend-authenticated upload/document intake and does not weaken owner scoping or session security.
+  - Focus/visibility re-entry refresh still runs by design; only the false-invalidating error handling was narrowed.
+- Notes:
+  - Preserved intentionally:
+    - current login/session architecture
+    - admin/user/fast-access separation
+    - backend document-runtime authority and owner scoping
+    - localized upload error handling in the dashboard workflow
+  - Post-fix behavior:
+    - upload/runtime failures stay on the current page
+    - transient refresh failures no longer cause false logout
+    - startup recovery is no longer used as a leaked upload/runtime failure surface for this path
+  - Verification:
+    - `npm run lint` was run after the fix.
+    - New lint errors introduced by this change set were fixed.
+    - Remaining `npm run lint` failures are unrelated pre-existing repository issues outside this task, including current errors in:
+      - `src/admin/components/CommunicationCenter.tsx`
+      - `src/App.tsx`
+      - `src/components/status/ResultPreviewContent.tsx`
+      - `src/services/emailDeliveryService.ts`
+      - `src/utils/exporters.ts`
+      - `tests/adminAccountDirectoryService.test.ts`
+
+[2026-03-29]
+- Area: TypeScript Lint Cleanup / Repo Stability
+- Files: /src/admin/components/CommunicationCenter.tsx, /src/App.tsx, /src/components/status/ResultPreviewContent.tsx, /src/services/emailDeliveryService.ts, /src/utils/exporters.ts, /tests/adminAccountDirectoryService.test.ts, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Resolved the remaining pre-existing TypeScript lint failures across communication, app-shell modal wiring, preview rendering, email dispatch typing, export utilities, and admin account directory tests, bringing `npm run lint` back to a clean pass.
+- Reason: The repository still had unrelated type errors outside the upload/auth recovery fix. These prevented a full `tsc --noEmit` pass and obscured whether future work introduced regressions.
+- Technical Details:
+  - `src/admin/components/CommunicationCenter.tsx`
+    - restored the missing current-user reference by reading `user` from `useAuth()` as `currentUser`
+    - normalized recipient `role` to the canonical `User['role']` type via `normalizeUserRole`
+  - `src/App.tsx`
+    - fixed the credit-modal close handler to use the existing popup-flow setter (`setCreditModalVisibility`) instead of a missing state setter
+  - `src/components/status/ResultPreviewContent.tsx`
+    - updated markdown code-block rendering to detect inline-vs-block styling without relying on the removed `inline` prop typing
+  - `src/services/emailDeliveryService.ts`
+    - typed JSON response parsing so backend payload access is no longer `unknown`
+  - `src/utils/exporters.ts`
+    - aliased the `docx` `Document` import to avoid collisions with the DOM `Document` type
+    - normalized DOM font-readiness typing for snapshot exports
+    - relaxed the legacy jsPDF local variable typing where needed so tuple-spread color calls no longer fail TypeScript
+  - `tests/adminAccountDirectoryService.test.ts`
+    - updated Firebase Admin auth mocks to use explicit `unknown` intermediate casting for test-only compatibility
+- Risks / Dependencies:
+  - No dependency changes were made; React 19 / TypeScript 5.8 / Firebase 12 remain unchanged and compatible.
+  - Changes are typing- and wiring-focused; no intended runtime behavior changes beyond restoring the already-intended handlers.
+- Notes:
+  - Preserved intentionally:
+    - current auth/session architecture
+    - admin/user/fast-access separation
+    - document runtime and AI execution behavior
+    - existing popup orchestration model
+  - Verification:
+    - `npm run lint` now passes successfully with `tsc --noEmit`.
+
+[2026-03-29]
+- Area: Local Document Runtime Auth Recovery + Upload/Preparation UX Separation
+- Files: /server.ts, /server/documentRuntime/documentArtifactStore.ts, /server/documentRuntime/documentIntakeService.ts, /src/services/documentRuntimeService.ts, /src/features/assessment-tool/pages/AssessmentDashboard.tsx, /src/upload/FileUploader.tsx, /src/utils/authHeaders.ts, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Fixed the local authenticated upload path so valid browser sessions are preserved during document intake, recoverable local Firebase Admin credential failures no longer surface as raw `16 UNAUTHENTICATED` document-preparation breaks, and the UI now separates file upload completion from later document preparation.
+- Reason: In the local integrated runtime, the browser was already sending a valid bearer token for `POST /api/documents/intake`, but the backend could still hit recoverable Firebase Admin / Firestore credential failures while reading bootstrap user data or persisting document metadata. That caused the preparation step to fail even though the browser session remained valid. The frontend also blended upload and preparation into one blocking UX state, so users could not tell whether bytes upload had succeeded before preparation failed.
+- Technical Details:
+  - Exact failing request / stage:
+    - The failing request is the follow-up authenticated intake request `POST /api/documents/intake`, not file selection itself.
+    - Frontend token attachment path was preserved and remains lightweight:
+      - `auth.currentUser?.getIdToken()` is still used without force-refresh in `src/utils/authHeaders.ts`
+      - the document-intake request still requires bearer auth and backend owner scoping
+    - Root local failure source:
+      - recoverable Firebase Admin / Firestore credential errors during backend bootstrap user-data reads and/or document metadata persistence
+      - these failures were leaking as raw `16 UNAUTHENTICATED: Request had invalid authentication credentials...` even though the browser session itself was still valid
+  - Auth/session fix:
+    - Added token-derived local fallback user-data resolution in `server.ts` for recoverable backend credential failures on normal-user flows while preserving:
+      - admin separation
+      - fast-access separation
+      - backend token verification
+      - auth-session validation boundaries
+    - Fast-access fallback was intentionally not generalized from token-only data to avoid weakening expiry / scope enforcement.
+  - Document runtime fix:
+    - Added local-safe in-memory metadata fallback inside `server/documentRuntime/documentArtifactStore.ts` for recoverable Firebase Admin / Firestore credential failures.
+    - The fallback only covers document-runtime metadata persistence/reads and mirrors the existing philosophy already used elsewhere in the repo for local Redis-optional development.
+    - Owner-scoped file payloads, backend auth middleware, and runtime actor ownership checks remain in place.
+    - Added targeted diagnostics for:
+      - source-file persisted
+      - document record ready
+      - artifact record ready
+      - artifact-store fallback activation / fallback reads/writes
+  - Upload vs preparation UX separation:
+    - Kept the existing `/api/documents/intake` contract intact.
+    - Reworked `src/services/documentRuntimeService.ts` intake transport to use upload-progress-aware request handling so the UI can detect when file bytes are fully uploaded before the long-running preparation response returns.
+    - Updated `src/features/assessment-tool/pages/AssessmentDashboard.tsx` stages to:
+      - validate
+      - upload
+      - extract / prepare
+      - store
+      - ready
+    - After bytes upload completes, the UI now marks the upload stage complete with a clear `File uploaded successfully` state, then automatically transitions into a separate preparation stage.
+    - If preparation later fails, the completed upload stage remains visible instead of collapsing the whole flow into a generic upload failure.
+    - Updated `src/upload/FileUploader.tsx` loading copy so the hero clearly distinguishes:
+      - active upload
+      - upload complete
+      - later document preparation
+  - Error handling improvements:
+    - Added specific preparation-failure mapping for local backend credential rejection so this path is surfaced as a localized document-preparation/runtime issue instead of a misleading browser-auth/session invalidation issue.
+    - Preparation failures now remain localized on the same page and do not imply the user was logged out.
+  - Diagnostics added / refined:
+    - `src/utils/authHeaders.ts`: token reuse source + current-user header-resolution diagnostics
+    - `src/services/documentRuntimeService.ts`: request URL + upload/progress-aware intake diagnostics
+    - `server/documentRuntime/documentIntakeService.ts`: source/document/artifact persistence stage diagnostics
+    - `server/documentRuntime/documentArtifactStore.ts`: explicit fallback activation/read/write diagnostics for local credential recovery
+- Risks / Dependencies:
+  - Local document-runtime metadata fallback is intentionally development-oriented and memory-backed; it preserves the current local integrated workflow but is not a substitute for durable Firestore metadata in production.
+  - Backend token verification and runtime ownership checks remain required; this change does not make document intake anonymous or bypass scoped access.
+- Notes:
+  - Preserved intentionally:
+    - current login/session architecture
+    - admin vs user vs fast-access separation
+    - backend document-runtime ownership model
+    - existing `/api/documents/intake` contract
+    - current local integrated runtime model
+  - Verification:
+    - `npm run lint` passes successfully with `tsc --noEmit`.
+    - Additional focused document-runtime verification:
+      - `node_modules\\.bin\\tsx.cmd --test tests\\documentPromptContextResolver.test.ts tests\\documentCleanupCoordinator.test.ts` passed
+      - `node_modules\\.bin\\tsx.cmd --test tests\\documentRuntime.test.ts` still fails due a pre-existing test-environment logger issue (`import.meta.env.DEV` is undefined in `src/utils/logger.ts` under that Node test path), not due to the document-intake/auth changes in this fix
+
+[2026-03-29]
+- Area: Ledger Refresh / Verified Architecture Snapshot
+- Files: /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Refreshed the ledger's top-level reference sections against the live repo so the file now works as a current architecture guide as well as a historical project memory.
+- Reason: The prior summary block still contained stale dependency versions, incomplete auth/session and document-runtime coverage, an outdated file index, and accidental header noise that reduced trustworthiness.
+- Technical Details:
+  - Replaced sections `1` through `11` with a verified current-code snapshot covering:
+    - project identity
+    - exact dependency/runtime audit
+    - frontend/backend/shared ownership boundaries
+    - configuration and deployment files
+    - key runtime files and integration map
+    - auth/session, document runtime, AI, admin, billing, communication, and results architecture summaries
+    - sensitive files/high-risk areas
+    - deployment target relationships
+    - future developer/agent guidance
+    - grouped file index/tree snapshot
+  - Verified current state against the live codebase, especially:
+    - `package.json` / `package-lock.json`
+    - `vite.config.ts`
+    - `server.ts`
+    - `firebase.json`
+    - `netlify.toml`
+    - `cloudbuild.yaml`
+    - `Dockerfile`
+    - `.env.example`
+    - `cloudrun.env`
+    - `deployment/runtime-manifest.json`
+    - `firestore.rules`
+    - `storage.rules`
+    - `src/`
+    - `server/`
+    - `tests/`
+  - Captured important current nuances that were previously under-documented:
+    - backend session architecture in `src/auth/session/*`, `server/authSessionService.ts`, and `server/auth/*`
+    - expanded `server/documentRuntime/*` surface and runtime workspace sensitivity
+    - current deployment targets across Firebase Hosting, Cloud Run, Netlify, Render, Railway, Fly, Vercel, Docker, and generic Linux helpers
+    - the explicit frontend Gemini exception still present in `src/ai/services/aiExecutor.ts`
+  - Removed stray non-ledger header noise from the canonical summary area while preserving the historical change log below.
+- Preserved intentionally:
+  - historical change-log entries
+  - feature-first ownership direction under `src/features/*`
+  - admin isolation under `src/admin/`
+  - the app-global `DocumentProvider` rule
+  - the backend-authoritative direction for billing, entitlements, and document prompt context
+- Risks / Dependencies:
+  - This snapshot will drift if the lockfile, deployment configs, auth/session system, or document runtime changes without a corresponding ledger refresh.
+  - `cloudrun.env`, `.env`, `serviceAccountKey.json`, and `runtime/document-workspaces/` remain high-risk and should continue to be treated carefully in future documentation work.
+- Notes:
+  - Documentation-only change. No application source code behavior was modified in this ledger refresh.

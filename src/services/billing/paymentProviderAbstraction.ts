@@ -17,6 +17,11 @@ import {
  */
 export type ProviderStatus = 'active' | 'inactive' | 'disabled' | 'future';
 
+function resolveServerPublicAppUrl(): string {
+  const configured = String(process.env.APP_URL || '').trim();
+  return (configured || 'http://localhost:3000').replace(/\/$/, '');
+}
+
 /**
  * Interface for a payment provider adapter.
  * Each provider (Paymob, FawryPay, EasyKash) must implement this.
@@ -106,7 +111,12 @@ export abstract class BasePaymentProviderAdapter implements PaymentProviderAdapt
   abstract refund(transactionId: string, amountCents: number, reason: string): Promise<{ success: boolean; refundId?: string; error?: string }>;
 
   protected getBaseUrl(): string {
-    // In a real app, this would be based on the environment
-    return process.env.APP_URL || 'http://localhost:3000';
+    /**
+     * This adapter layer executes on the backend only, even though it lives
+     * under `src/` for historical reasons. Keep APP_URL pointed at the public
+     * frontend origin (local app, Firebase Hosting, or Netlify) rather than the
+     * backend host so payment providers return users to the correct surface.
+     */
+    return resolveServerPublicAppUrl();
   }
 }

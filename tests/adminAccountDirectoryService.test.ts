@@ -186,7 +186,7 @@ test('admin login identity resolves reserved username local-part to canonical ad
         email,
         disabled: false,
       }) as admin.auth.UserRecord,
-  } as admin.auth.Auth;
+  } as unknown as admin.auth.Auth;
 
   const db = {
     collection: (collectionName: string) => {
@@ -233,7 +233,7 @@ test('admin login identity resolves reserved username local-part to canonical ad
 });
 
 test('admin login identity rejects ambiguous reserved admin username matches', async () => {
-  const auth = {} as admin.auth.Auth;
+  const auth = {} as unknown as admin.auth.Auth;
   const db = {
     collection: () => ({
       where: () => ({
@@ -270,7 +270,7 @@ test('admin login identity rejects suspended admin accounts before password auth
         email,
         disabled: false,
       }) as admin.auth.UserRecord,
-  } as admin.auth.Auth;
+  } as unknown as admin.auth.Auth;
 
   const db = {
     collection: () => ({
@@ -322,7 +322,7 @@ test('admin login identity falls back safely when admin auth directory credentia
         code: 'app/invalid-credential',
       });
     },
-  } as admin.auth.Auth;
+  } as unknown as admin.auth.Auth;
 
   const db = {} as any;
 
@@ -351,7 +351,7 @@ test('admin login identity falls back to reserved email local-part when username
         code: 'app/invalid-credential',
       });
     },
-  } as admin.auth.Auth;
+  } as unknown as admin.auth.Auth;
 
   const db = {
     collection: () => ({
@@ -387,7 +387,7 @@ test('admin login identity falls back to reserved email local-part when username
 });
 
 test('admin login identity reports directory unavailability when username lookup cannot be verified safely', async () => {
-  const auth = {} as admin.auth.Auth;
+  const auth = {} as unknown as admin.auth.Auth;
 
   const db = {
     collection: () => ({

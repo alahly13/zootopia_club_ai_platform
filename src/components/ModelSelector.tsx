@@ -11,6 +11,7 @@ import { verifyAndRedeemCode } from '../services/accessControl/codeService';
 import { MODEL_UNLOCK_PRICE_EGP, getDefaultAccessibleModelIdsForTool, resolveModelAccess } from '../ai/modelAccess';
 import { sortModelsByRegistryOrder } from '../ai/models/modelRegistry';
 import { MODEL_ACCESS_MODAL_FLOW_ID, POPUP_FLOW_PRIORITY } from '../constants/popupFlows';
+import { buildAppUrl } from '../config/runtime';
 
 interface ModelSelectorProps {
   selectedModelId: string;
@@ -236,8 +237,8 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
         headers,
         body: JSON.stringify({
           modelId: selectedLockedModel.id,
-          successUrl: `${window.location.origin}/billing?${params.toString()}`,
-          cancelUrl: `${window.location.origin}/billing?${params.toString()}&cancelled=true`,
+          successUrl: buildAppUrl(`/billing?${params.toString()}`),
+          cancelUrl: buildAppUrl(`/billing?${params.toString()}&cancelled=true`),
         }),
       });
 

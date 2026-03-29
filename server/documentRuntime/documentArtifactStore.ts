@@ -1,4 +1,7 @@
 import crypto from 'crypto';
+import { logDiagnostic, normalizeError } from '../diagnostics.js';
+import { isRecoverableAdminCredentialError } from '../adminAccountDirectoryService.js';
+import { shouldAllowDocumentRuntimeMemoryFallback } from './config.js';
 import { documentWorkspaceStorage } from './documentStorage.js';
 import { assertActorOwnsResource } from './actorScope.js';
 import {
@@ -11,6 +14,7 @@ import {
 export const RUNTIME_DOCUMENT_COLLECTION = 'runtime_documents';
 export const RUNTIME_DOCUMENT_ARTIFACT_COLLECTION = 'runtime_document_artifacts';
 export const RUNTIME_DOCUMENT_AUDIT_COLLECTION = 'runtime_document_access_audits';
+const DOCUMENT_ARTIFACT_STORE_MEMORY_FALLBACK_ENABLED = shouldAllowDocumentRuntimeMemoryFallback();
 
 function isExpiredIso(value?: string | null): boolean {
   if (!value) {
@@ -22,7 +26,62 @@ function isExpiredIso(value?: string | null): boolean {
 }
 
 export class DocumentArtifactStore {
+  private readonly documentFallbackStore = new Map<string, StoredDocumentRecord>();
+  private readonly artifactFallbackStore = new Map<string, StoredArtifactRecord>();
+  private hasLoggedMemoryFallbackActivation = false;
+
   constructor(private readonly db: FirebaseFirestore.Firestore) {}
+
+  private shouldUseMemoryFallback(error: unknown): boolean {
+    return DOCUMENT_ARTIFACT_STORE_MEMORY_FALLBACK_ENABLED && isRecoverableAdminCredentialError(error);
+  }
+
+  private cacheDocumentRecord(record: StoredDocumentRecord): StoredDocumentRecord {
+    const cached = { ...record };
+    this.documentFallbackStore.set(record.documentId, cached);
+    return cached;
+  }
+
+  private cacheArtifactRecord(record: StoredArtifactRecord): StoredArtifactRecord {
+    const cached = { ...record };
+    this.artifactFallbackStore.set(record.artifactId, cached);
+    return cached;
+  }
+
+  private getCachedDocumentRecord(documentId: string): StoredDocumentRecord | null {
+    const cached = this.documentFallbackStore.get(documentId);
+    return cached ? { ...cached } : null;
+  }
+
+  private getCachedArtifactRecord(artifactId: string): StoredArtifactRecord | null {
+    const cached = this.artifactFallbackStore.get(artifactId);
+    return cached ? { ...cached } : null;
+  }
+
+  private logMemoryFallback(event: string, details: Record<string, unknown>, error: unknown): void {
+    if (!this.hasLoggedMemoryFallbackActivation) {
+      this.hasLoggedMemoryFallbackActivation = true;
+      logDiagnostic('warn', 'document_runtime.artifact_store_memory_fallback_enabled', {
+        area: 'document-runtime',
+        stage: 'artifact_store',
+        status: 'fallback',
+        details: {
+          reason: 'recoverable_firebase_admin_credential_error',
+          error: normalizeError(error),
+        },
+      });
+    }
+
+    logDiagnostic('warn', event, {
+      area: 'document-runtime',
+      stage: 'artifact_store',
+      status: 'fallback',
+      details: {
+        ...details,
+        error: normalizeError(error),
+      },
+    });
+  }
 
   private async markArtifactInvalidated(
     artifactId: string | null | undefined,
@@ -32,17 +91,43 @@ export class DocumentArtifactStore {
       return;
     }
 
-    await this.db
-      .collection(RUNTIME_DOCUMENT_ARTIFACT_COLLECTION)
-      .doc(artifactId)
-      .set(
-        {
-          updatedAt: new Date().toISOString(),
-          invalidatedAt: new Date().toISOString(),
-          invalidationReason: reason,
-        },
-        { merge: true }
-      );
+    const update = {
+      updatedAt: new Date().toISOString(),
+      invalidatedAt: new Date().toISOString(),
+      invalidationReason: reason,
+    };
+
+    try {
+      await this.db
+        .collection(RUNTIME_DOCUMENT_ARTIFACT_COLLECTION)
+        .doc(artifactId)
+        .set(update, { merge: true });
+
+      const cachedArtifact = this.getCachedArtifactRecord(artifactId);
+      if (cachedArtifact) {
+        this.cacheArtifactRecord({
+          ...cachedArtifact,
+          ...update,
+        });
+      }
+    } catch (error) {
+      if (!this.shouldUseMemoryFallback(error)) {
+        throw error;
+      }
+
+      const cachedArtifact = this.getCachedArtifactRecord(artifactId);
+      if (cachedArtifact) {
+        this.cacheArtifactRecord({
+          ...cachedArtifact,
+          ...update,
+        });
+      }
+
+      this.logMemoryFallback('document_runtime.artifact_invalidation_fallback', {
+        artifactId,
+        reason,
+      }, error);
+    }
   }
 
   async createDocumentRecord(input: Omit<StoredDocumentRecord, 'createdAt' | 'updatedAt'>): Promise<StoredDocumentRecord> {
@@ -53,8 +138,21 @@ export class DocumentArtifactStore {
       updatedAt: nowIso,
     };
 
-    await this.db.collection(RUNTIME_DOCUMENT_COLLECTION).doc(record.documentId).set(record);
-    return record;
+    try {
+      await this.db.collection(RUNTIME_DOCUMENT_COLLECTION).doc(record.documentId).set(record);
+    } catch (error) {
+      if (!this.shouldUseMemoryFallback(error)) {
+        throw error;
+      }
+
+      this.logMemoryFallback('document_runtime.document_record_create_fallback', {
+        documentId: record.documentId,
+        workflowId: record.workflowId,
+        fileName: record.fileName,
+      }, error);
+    }
+
+    return this.cacheDocumentRecord(record);
   }
 
   async updateDocumentRecord(
@@ -62,19 +160,44 @@ export class DocumentArtifactStore {
     updates: Partial<StoredDocumentRecord>
   ): Promise<StoredDocumentRecord> {
     const ref = this.db.collection(RUNTIME_DOCUMENT_COLLECTION).doc(documentId);
-    const snap = await ref.get();
-    if (!snap.exists) {
-      throw new Error('DOCUMENT_NOT_FOUND');
-    }
 
-    const current = snap.data() as StoredDocumentRecord;
-    const next: StoredDocumentRecord = {
-      ...current,
-      ...updates,
-      updatedAt: new Date().toISOString(),
-    };
-    await ref.set(next);
-    return next;
+    try {
+      const snap = await ref.get();
+      if (!snap.exists) {
+        throw new Error('DOCUMENT_NOT_FOUND');
+      }
+
+      const current = snap.data() as StoredDocumentRecord;
+      const next: StoredDocumentRecord = {
+        ...current,
+        ...updates,
+        updatedAt: new Date().toISOString(),
+      };
+      await ref.set(next);
+      return this.cacheDocumentRecord(next);
+    } catch (error) {
+      if (!this.shouldUseMemoryFallback(error)) {
+        throw error;
+      }
+
+      const current = this.getCachedDocumentRecord(documentId);
+      if (!current) {
+        throw new Error('DOCUMENT_NOT_FOUND');
+      }
+
+      const next: StoredDocumentRecord = {
+        ...current,
+        ...updates,
+        updatedAt: new Date().toISOString(),
+      };
+
+      this.logMemoryFallback('document_runtime.document_record_update_fallback', {
+        documentId,
+        updatedFields: Object.keys(updates),
+      }, error);
+
+      return this.cacheDocumentRecord(next);
+    }
   }
 
   async createArtifactRecord(input: {
@@ -123,62 +246,132 @@ export class DocumentArtifactStore {
       invalidationReason: null,
     };
 
-    await this.db.runTransaction(async (tx) => {
-      const documentRef = this.db.collection(RUNTIME_DOCUMENT_COLLECTION).doc(record.documentId);
-      const artifactRef = this.db
-        .collection(RUNTIME_DOCUMENT_ARTIFACT_COLLECTION)
-        .doc(record.artifactId);
-      const documentSnap = await tx.get(documentRef);
+    const nextDocumentFromCurrent = (current: StoredDocumentRecord): StoredDocumentRecord => ({
+      ...current,
+      activeArtifactId: record.artifactId,
+      status: 'ready',
+      fileType: input.payload.fileType,
+      extractionMeta: input.payload.extractionMeta,
+      extractionStrategy: input.payload.extractionStrategy,
+      extractionVersion: input.payload.extractionVersion,
+      expiresAt: input.payload.expiresAt || null,
+      latestError: null,
+      updatedAt: nowIso,
+    });
 
-      if (!documentSnap.exists) {
+    let committedDocumentRecord: StoredDocumentRecord | null = null;
+
+    try {
+      await this.db.runTransaction(async (tx) => {
+        const documentRef = this.db.collection(RUNTIME_DOCUMENT_COLLECTION).doc(record.documentId);
+        const artifactRef = this.db
+          .collection(RUNTIME_DOCUMENT_ARTIFACT_COLLECTION)
+          .doc(record.artifactId);
+        const documentSnap = await tx.get(documentRef);
+
+        if (!documentSnap.exists) {
+          throw new Error('DOCUMENT_NOT_FOUND');
+        }
+
+        const current = documentSnap.data() as StoredDocumentRecord;
+        if (current.status !== 'processing' && current.status !== 'pending') {
+          throw new Error('DOCUMENT_RUNTIME_STALE_WRITE_BLOCKED');
+        }
+
+        const nextDocument = nextDocumentFromCurrent(current);
+
+        tx.set(artifactRef, record);
+        tx.set(documentRef, nextDocument);
+        committedDocumentRecord = nextDocument;
+      });
+
+      if (committedDocumentRecord) {
+        this.cacheDocumentRecord(committedDocumentRecord);
+      }
+    } catch (error) {
+      if (!this.shouldUseMemoryFallback(error)) {
+        throw error;
+      }
+
+      const current = this.getCachedDocumentRecord(record.documentId);
+      if (!current) {
         throw new Error('DOCUMENT_NOT_FOUND');
       }
 
-      const current = documentSnap.data() as StoredDocumentRecord;
       if (current.status !== 'processing' && current.status !== 'pending') {
         throw new Error('DOCUMENT_RUNTIME_STALE_WRITE_BLOCKED');
       }
 
-      const nextDocument: StoredDocumentRecord = {
-        ...current,
-        activeArtifactId: record.artifactId,
-        status: 'ready',
-        fileType: input.payload.fileType,
-        extractionMeta: input.payload.extractionMeta,
-        extractionStrategy: input.payload.extractionStrategy,
-        extractionVersion: input.payload.extractionVersion,
-        expiresAt: input.payload.expiresAt || null,
-        latestError: null,
-        updatedAt: nowIso,
-      };
+      const nextDocument = nextDocumentFromCurrent(current);
+      this.cacheArtifactRecord(record);
+      this.cacheDocumentRecord(nextDocument);
 
-      tx.set(artifactRef, record);
-      tx.set(documentRef, nextDocument);
-    });
+      this.logMemoryFallback('document_runtime.artifact_record_create_fallback', {
+        documentId: record.documentId,
+        artifactId: record.artifactId,
+        workflowId: record.workflowId,
+      }, error);
+    }
 
-    return record;
+    return this.cacheArtifactRecord(record);
   }
 
   async getOwnedDocument(actor: DocumentActorContext, documentId: string): Promise<StoredDocumentRecord> {
-    const snap = await this.db.collection(RUNTIME_DOCUMENT_COLLECTION).doc(documentId).get();
-    if (!snap.exists) {
-      throw new Error('DOCUMENT_NOT_FOUND');
-    }
+    try {
+      const snap = await this.db.collection(RUNTIME_DOCUMENT_COLLECTION).doc(documentId).get();
+      if (!snap.exists) {
+        throw new Error('DOCUMENT_NOT_FOUND');
+      }
 
-    const record = snap.data() as StoredDocumentRecord;
-    assertActorOwnsResource(actor, record.ownerActorId, record.workspaceScope);
-    return record;
+      const record = snap.data() as StoredDocumentRecord;
+      assertActorOwnsResource(actor, record.ownerActorId, record.workspaceScope);
+      return this.cacheDocumentRecord(record);
+    } catch (error) {
+      if (!this.shouldUseMemoryFallback(error)) {
+        throw error;
+      }
+
+      const record = this.getCachedDocumentRecord(documentId);
+      if (!record) {
+        throw new Error('DOCUMENT_NOT_FOUND');
+      }
+
+      assertActorOwnsResource(actor, record.ownerActorId, record.workspaceScope);
+      this.logMemoryFallback('document_runtime.document_record_read_fallback', {
+        documentId,
+        actorId: actor.actorId,
+      }, error);
+      return record;
+    }
   }
 
   async getOwnedArtifact(actor: DocumentActorContext, artifactId: string): Promise<StoredArtifactRecord> {
-    const snap = await this.db.collection(RUNTIME_DOCUMENT_ARTIFACT_COLLECTION).doc(artifactId).get();
-    if (!snap.exists) {
-      throw new Error('DOCUMENT_ARTIFACT_NOT_FOUND');
-    }
+    try {
+      const snap = await this.db.collection(RUNTIME_DOCUMENT_ARTIFACT_COLLECTION).doc(artifactId).get();
+      if (!snap.exists) {
+        throw new Error('DOCUMENT_ARTIFACT_NOT_FOUND');
+      }
 
-    const record = snap.data() as StoredArtifactRecord;
-    assertActorOwnsResource(actor, record.ownerActorId, record.workspaceScope);
-    return record;
+      const record = snap.data() as StoredArtifactRecord;
+      assertActorOwnsResource(actor, record.ownerActorId, record.workspaceScope);
+      return this.cacheArtifactRecord(record);
+    } catch (error) {
+      if (!this.shouldUseMemoryFallback(error)) {
+        throw error;
+      }
+
+      const record = this.getCachedArtifactRecord(artifactId);
+      if (!record) {
+        throw new Error('DOCUMENT_ARTIFACT_NOT_FOUND');
+      }
+
+      assertActorOwnsResource(actor, record.ownerActorId, record.workspaceScope);
+      this.logMemoryFallback('document_runtime.artifact_record_read_fallback', {
+        artifactId,
+        actorId: actor.actorId,
+      }, error);
+      return record;
+    }
   }
 
   async getArtifactForDocument(actor: DocumentActorContext, documentId: string): Promise<{
@@ -268,7 +461,7 @@ export class DocumentArtifactStore {
     targetOwnerActorId: string;
     reason: string;
   }): Promise<void> {
-    await this.db.collection(RUNTIME_DOCUMENT_AUDIT_COLLECTION).add({
+    const auditRecord = {
       auditId: crypto.randomUUID(),
       actorId: input.adminActor.actorId,
       actorRole: input.adminActor.actorRole,
@@ -277,6 +470,20 @@ export class DocumentArtifactStore {
       targetOwnerActorId: input.targetOwnerActorId,
       reason: input.reason,
       createdAt: new Date().toISOString(),
-    });
+    };
+
+    try {
+      await this.db.collection(RUNTIME_DOCUMENT_AUDIT_COLLECTION).add(auditRecord);
+    } catch (error) {
+      if (!this.shouldUseMemoryFallback(error)) {
+        throw error;
+      }
+
+      this.logMemoryFallback('document_runtime.audit_write_fallback', {
+        targetDocumentId: input.targetDocumentId,
+        targetOwnerActorId: input.targetOwnerActorId,
+        adminActorId: input.adminActor.actorId,
+      }, error);
+    }
   }
 }

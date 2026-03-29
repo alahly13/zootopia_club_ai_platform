@@ -43,6 +43,7 @@ import { useAuthListeners } from './hooks/useAuthListeners';
 import { isUserAdmin } from './accessControl';
 import { clearWelcomeSessionFlags } from '../constants/welcomeFlow';
 import { aiCache } from '../ai/services/cacheService';
+import { runtimeTimeouts } from '../config/runtime';
 import { safeLocalStorageRemoveItem } from '../utils/browserStorage';
 import {
   AuthSessionState,
@@ -100,6 +101,80 @@ type AuthBootstrapIssue = {
   reason: string;
   phase: AuthBootstrapState;
 };
+
+type RefreshFailureDisposition =
+  | {
+      action: 'invalidate';
+      classification: 'verified_expired' | 'verified_invalid' | 'verified_unauthorized';
+      sessionState: AuthSessionState['sessionState'];
+      logoutReason: string | null;
+      code: string | null;
+      status: number | null;
+    }
+  | {
+      action: 'preserve';
+      classification: 'transient_or_unverified';
+      code: string | null;
+      status: number | null;
+    };
+
+function resolveRefreshFailureDisposition(error: unknown): RefreshFailureDisposition {
+  if (!isAuthSessionApiError(error)) {
+    return {
+      action: 'preserve',
+      classification: 'transient_or_unverified',
+      code: null,
+      status: null,
+    };
+  }
+
+  const code = error.code || null;
+  const status = Number.isFinite(error.status) ? error.status : null;
+
+  if (code === 'SESSION_EXPIRED' || code === 'SESSION_MAX_LIFETIME_EXCEEDED') {
+    return {
+      action: 'invalidate',
+      classification: 'verified_expired',
+      sessionState: 'expired',
+      logoutReason: 'session_expired',
+      code,
+      status,
+    };
+  }
+
+  if (
+    code === 'SESSION_INVALIDATED' ||
+    code === 'AUTH_MODE_MISMATCH' ||
+    code === 'SESSION_MISSING'
+  ) {
+    return {
+      action: 'invalidate',
+      classification: 'verified_invalid',
+      sessionState: 'invalid',
+      logoutReason: null,
+      code,
+      status,
+    };
+  }
+
+  if (status === 401 || status === 403) {
+    return {
+      action: 'invalidate',
+      classification: 'verified_unauthorized',
+      sessionState: 'invalid',
+      logoutReason: null,
+      code,
+      status,
+    };
+  }
+
+  return {
+    action: 'preserve',
+    classification: 'transient_or_unverified',
+    code,
+    status,
+  };
+}
 
 interface AuthContextType {
   user: User | null;
@@ -222,8 +297,8 @@ interface AuthContextType {
   updateUserCredits: (userId: string, credits: number) => Promise<void>;
 }
 
-const INITIAL_AUTH_RESOLUTION_TIMEOUT_MS = 15_000;
-const AUTH_PROFILE_SYNC_TIMEOUT_MS = 12_000;
+const INITIAL_AUTH_RESOLUTION_TIMEOUT_MS = runtimeTimeouts.authInitialResolutionMs;
+const AUTH_PROFILE_SYNC_TIMEOUT_MS = runtimeTimeouts.authProfileSyncMs;
 const AUTH_SESSION_REENTRY_REFRESH_INTERVAL_MS = 5 * 60_000;
 
 function isStoredAuthSessionStillRestorable(session: AuthSessionState | null): session is AuthSessionState {
@@ -1056,41 +1131,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return await establishAuthSession(expectedAuthType, source);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        const disposition = resolveRefreshFailureDisposition(error);
         logger.warn('Session refresh failed', {
           area: 'auth',
           event: 'auth-session-refresh-failed',
           expectedAuthType,
+          source,
+          disposition: disposition.classification,
+          code: disposition.code,
+          status: disposition.status,
+          timeoutBudgetMs: runtimeTimeouts.authSessionApiMs,
           error,
         });
 
-        if (isAuthSessionApiError(error)) {
-          const isExpired =
-            error.code === 'SESSION_EXPIRED' ||
-            error.code === 'SESSION_MAX_LIFETIME_EXCEEDED';
-          const isInvalid =
-            error.code === 'SESSION_INVALIDATED' ||
-            error.code === 'AUTH_MODE_MISMATCH' ||
-            error.code === 'SESSION_MISSING';
-
-          if (isExpired || isInvalid) {
-            try {
-              await signOut(auth);
-            } catch {
-              // Best-effort sign-out only.
-            }
-
-            clearSessionState({
-              sessionState: isExpired ? 'expired' : 'invalid',
-              logoutReason: isExpired ? 'session_expired' : null,
-              restoreFailureReason: message,
-            });
-            setAuthBootstrapState(isExpired ? 'expired' : 'invalid');
-            setIsAuthReady(true);
-            throw error;
-          }
-        }
-
-        if (/session|sign in|authentication/i.test(message)) {
+        if (disposition.action === 'invalidate') {
           try {
             await signOut(auth);
           } catch {
@@ -1098,16 +1152,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
 
           clearSessionState({
-            sessionState: 'invalid',
+            sessionState: disposition.sessionState,
+            logoutReason: disposition.logoutReason,
             restoreFailureReason: message,
           });
-          setAuthBootstrapState('invalid');
+          setAuthBootstrapState(disposition.sessionState === 'expired' ? 'expired' : 'invalid');
           setIsAuthReady(true);
+
+          logger.warn('Session refresh invalidated the active session', {
+            area: 'auth',
+            event: 'auth-session-refresh-invalidated',
+            expectedAuthType,
+            source,
+            disposition: disposition.classification,
+            code: disposition.code,
+            status: disposition.status,
+          });
         } else {
           setAuthSession((current) => ({
             ...current,
             restoreFailureReason: message,
           }));
+
+          logger.info('Transient session refresh failure preserved active session', {
+            area: 'auth',
+            event: 'auth-session-refresh-preserved',
+            expectedAuthType,
+            source,
+            disposition: disposition.classification,
+            code: disposition.code,
+            status: disposition.status,
+            restoreFailureReason: message,
+          });
         }
 
         throw error;
@@ -1317,7 +1393,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     let lastRefreshAt = 0;
 
-    const maybeRefreshSession = () => {
+    const maybeRefreshSession = (trigger: 'focus' | 'visibilitychange') => {
       if (document.visibilityState && document.visibilityState !== 'visible') {
         return;
       }
@@ -1327,17 +1403,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       lastRefreshAt = Date.now();
+      logger.info('Session refresh triggered from browser re-entry', {
+        area: 'auth',
+        event: 'auth-session-reentry-refresh-triggered',
+        trigger,
+        currentUserId: user.id,
+        authType: authSession.authType,
+        sessionState: authSession.sessionState,
+        timeoutBudgetMs: runtimeTimeouts.authSessionApiMs,
+      });
       void refreshActiveAuthSession('refresh').catch(() => undefined);
     };
 
-    window.addEventListener('focus', maybeRefreshSession);
-    document.addEventListener('visibilitychange', maybeRefreshSession);
+    const handleWindowFocus = () => maybeRefreshSession('focus');
+    const handleVisibilityChange = () => maybeRefreshSession('visibilitychange');
+
+    window.addEventListener('focus', handleWindowFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      window.removeEventListener('focus', maybeRefreshSession);
-      document.removeEventListener('visibilitychange', maybeRefreshSession);
+      window.removeEventListener('focus', handleWindowFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [authSession.sessionState, refreshActiveAuthSession, user?.id]);
+  }, [authSession.authType, authSession.sessionState, refreshActiveAuthSession, user?.id]);
 
   /**
    * Context value is memoized to reduce downstream re-renders.

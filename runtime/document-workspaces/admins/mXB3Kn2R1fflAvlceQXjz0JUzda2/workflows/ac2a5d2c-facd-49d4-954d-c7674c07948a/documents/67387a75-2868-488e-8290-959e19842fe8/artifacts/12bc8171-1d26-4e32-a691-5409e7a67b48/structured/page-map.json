@@ -1,0 +1,486 @@
+[
+  {
+    "pageNumber": 1,
+    "segmentIds": [
+      "7dff0fcbd0f1043b"
+    ],
+    "sectionTitles": [
+      "Endocrinology",
+      "Z352"
+    ],
+    "headingIds": [
+      "562f1fedd4062d4d",
+      "f892aa78acabe50c"
+    ],
+    "sourceKinds": [
+      "hybrid"
+    ],
+    "charCount": 178
+  },
+  {
+    "pageNumber": 2,
+    "segmentIds": [
+      "dfe748656a3637a1"
+    ],
+    "sectionTitles": [
+      "Thyroid and parathyroid glands"
+    ],
+    "headingIds": [
+      "95aa3da105c1d620"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 30
+  },
+  {
+    "pageNumber": 3,
+    "segmentIds": [
+      "6ffc89178b2b14c6"
+    ],
+    "sectionTitles": [
+      "Thyroid gland"
+    ],
+    "headingIds": [
+      "dd3d941586032fe8"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 404
+  },
+  {
+    "pageNumber": 4,
+    "segmentIds": [
+      "137e5a5a529faabe"
+    ],
+    "sectionTitles": [
+      "Anatomy of thyroid gland"
+    ],
+    "headingIds": [
+      "191f524715372224"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 496
+  },
+  {
+    "pageNumber": 5,
+    "segmentIds": [
+      "38276bcc3d4e8bcb"
+    ],
+    "sectionTitles": [
+      "Anatomy of thyroid gland"
+    ],
+    "headingIds": [
+      "2de05435f2d63ad1"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 226
+  },
+  {
+    "pageNumber": 6,
+    "segmentIds": [
+      "ea44155187bd0980"
+    ],
+    "sectionTitles": [
+      "Thyroid Hormones"
+    ],
+    "headingIds": [
+      "8ea9ae3da7282e1e"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 588
+  },
+  {
+    "pageNumber": 7,
+    "segmentIds": [
+      "3ed8c5fd6f9f6f97"
+    ],
+    "sectionTitles": [
+      "Biosynthesis and release of Thyroid Hormones"
+    ],
+    "headingIds": [
+      "79e38a0b9f75b746"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 233
+  },
+  {
+    "pageNumber": 8,
+    "segmentIds": [
+      "57e956fe53a5cc3b"
+    ],
+    "sectionTitles": [
+      "Biosynthesis and release of Thyroid Hormones"
+    ],
+    "headingIds": [
+      "e2fa443d295bdb68"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 432
+  },
+  {
+    "pageNumber": 9,
+    "segmentIds": [
+      "b7d7966a34f58cc0"
+    ],
+    "sectionTitles": [
+      "Biosynthesis and release of Thyroid Hormones"
+    ],
+    "headingIds": [
+      "0935974e96c47778"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 534
+  },
+  {
+    "pageNumber": 10,
+    "segmentIds": [
+      "a670e5c6e8b79313"
+    ],
+    "sectionTitles": [],
+    "headingIds": [],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 296
+  },
+  {
+    "pageNumber": 11,
+    "segmentIds": [
+      "37018d5eb98439db"
+    ],
+    "sectionTitles": [],
+    "headingIds": [],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 360
+  },
+  {
+    "pageNumber": 12,
+    "segmentIds": [
+      "d57605674e290eab"
+    ],
+    "sectionTitles": [
+      "Regulation of Thyroid Hormone Synthesis"
+    ],
+    "headingIds": [
+      "8672e80e5f6f4935"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 495
+  },
+  {
+    "pageNumber": 13,
+    "segmentIds": [
+      "e2ab906fd1d3d2e4"
+    ],
+    "sectionTitles": [
+      "Thyroid hormone Function"
+    ],
+    "headingIds": [
+      "1193a9383c0eb780"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 405
+  },
+  {
+    "pageNumber": 15,
+    "segmentIds": [
+      "b9d1819afd4c1d05"
+    ],
+    "sectionTitles": [
+      "Thyroid hormone and fat metabolism"
+    ],
+    "headingIds": [
+      "562080488429f103"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 463
+  },
+  {
+    "pageNumber": 16,
+    "segmentIds": [
+      "e12654ca81e53299"
+    ],
+    "sectionTitles": [
+      "Maturation of the Central Nervous",
+      "System (CNS)"
+    ],
+    "headingIds": [
+      "8e1a8719b2588ecd",
+      "1da818556d94c44c"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 282
+  },
+  {
+    "pageNumber": 17,
+    "segmentIds": [
+      "c6ea41a2c19cfe70"
+    ],
+    "sectionTitles": [
+      "Cretinism"
+    ],
+    "headingIds": [
+      "1c6bece166ef000e"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 185
+  },
+  {
+    "pageNumber": 18,
+    "segmentIds": [
+      "d947ded7982a4e89"
+    ],
+    "sectionTitles": [
+      "Skeletal Growth and",
+      "Maturation"
+    ],
+    "headingIds": [
+      "8c29c1e137f2167d",
+      "245726b39e27fcf9"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 421
+  },
+  {
+    "pageNumber": 19,
+    "segmentIds": [
+      "693dbf2da32c2a54"
+    ],
+    "sectionTitles": [
+      "Thyroid Parafollicular (C) cells and Calcitonin"
+    ],
+    "headingIds": [
+      "7dbfb638f01657bc"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 308
+  },
+  {
+    "pageNumber": 20,
+    "segmentIds": [
+      "0cd04e2c5f7b3aec"
+    ],
+    "sectionTitles": [
+      "Calcitonin has the following effects:"
+    ],
+    "headingIds": [
+      "963189691e653404"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 313
+  },
+  {
+    "pageNumber": 21,
+    "segmentIds": [
+      "57bc06e1233f8631"
+    ],
+    "sectionTitles": [
+      "Calcium hemostasis"
+    ],
+    "headingIds": [
+      "c345522a2a9b50cb"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 18
+  },
+  {
+    "pageNumber": 22,
+    "segmentIds": [
+      "e7d1a80e5de2bd48"
+    ],
+    "sectionTitles": [],
+    "headingIds": [],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 219
+  },
+  {
+    "pageNumber": 23,
+    "segmentIds": [
+      "01a75b2693d7c972"
+    ],
+    "sectionTitles": [],
+    "headingIds": [],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 170
+  },
+  {
+    "pageNumber": 24,
+    "segmentIds": [
+      "af916cfaf009c0cd"
+    ],
+    "sectionTitles": [],
+    "headingIds": [],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 536
+  },
+  {
+    "pageNumber": 26,
+    "segmentIds": [
+      "181bec8267374421"
+    ],
+    "sectionTitles": [
+      "Calcitriol"
+    ],
+    "headingIds": [
+      "fd376e7d93d3f73f"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 472
+  },
+  {
+    "pageNumber": 27,
+    "segmentIds": [
+      "49d23cdb22444d98"
+    ],
+    "sectionTitles": [],
+    "headingIds": [],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 249
+  },
+  {
+    "pageNumber": 28,
+    "segmentIds": [
+      "bcaa41fed8390057"
+    ],
+    "sectionTitles": [
+      "Clinical Disorders"
+    ],
+    "headingIds": [
+      "a3992ae2583a9c60"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 340
+  },
+  {
+    "pageNumber": 29,
+    "segmentIds": [
+      "e2fc586b725e7fa0"
+    ],
+    "sectionTitles": [
+      "ADULT HYPOTHYROIDISM"
+    ],
+    "headingIds": [
+      "28c19202e44452cc"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 391
+  },
+  {
+    "pageNumber": 30,
+    "segmentIds": [
+      "dcc0562dfaf21a99"
+    ],
+    "sectionTitles": [
+      "ADULT HYPOTHYROIDISM"
+    ],
+    "headingIds": [
+      "e3c649672e257d66"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 461
+  },
+  {
+    "pageNumber": 31,
+    "segmentIds": [
+      "586b0adea7178958"
+    ],
+    "sectionTitles": [
+      "CHILDHOOD (CONGENITAL) HYPOTHYROIDISM"
+    ],
+    "headingIds": [
+      "d4a0c86e9c53626d"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 564
+  },
+  {
+    "pageNumber": 32,
+    "segmentIds": [
+      "ce504c1424137913"
+    ],
+    "sectionTitles": [
+      "Some other important causes of hypothyroidism include:",
+      "1. Surgicalremoval(partialthyroidectomy) or radioactive",
+      "2. InadequateTSHproduction duetopituitaryorhypothalamic",
+      "3. Iodinedeficiency: Endemicgoitercanresultfromlowiodide"
+    ],
+    "headingIds": [
+      "5f6d03902eb46173",
+      "0ff481c6f8664f43",
+      "fd0b08c764d510b9",
+      "9994c6bed6b926f4"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 505
+  },
+  {
+    "pageNumber": 33,
+    "segmentIds": [
+      "355c3d4d11a2e003"
+    ],
+    "sectionTitles": [
+      "Hyperthyroidism"
+    ],
+    "headingIds": [
+      "122216d246d1b596"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 264
+  }
+]

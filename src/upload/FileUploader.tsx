@@ -38,6 +38,10 @@ const FileUploader: React.FC<FileUploaderProps> = ({
   const { t } = useLanguage();
   const { status, message, error, setError, isLoading, isError, reset } = useStatus();
   const isBusy = externalLoading || isLoading;
+  const uploadStageCompleted = Boolean(
+    stages?.some((stage) => stage.id === 'upload' && stage.status === 'completed')
+  );
+  const activeExternalStage = stages?.find((stage) => stage.status === 'active') || null;
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     if (acceptedFiles.length < 1) {
@@ -65,15 +69,23 @@ const FileUploader: React.FC<FileUploaderProps> = ({
   });
 
   const headline = externalLoading
-    ? t('uploadUI.uploadHeroUploadingTitle', { defaultValue: 'Preparing your file' })
+    ? uploadStageCompleted
+      ? t('uploadUI.uploadHeroUploadedTitle', { defaultValue: 'File uploaded successfully' })
+      : activeExternalStage?.id === 'upload'
+        ? t('uploadUI.uploadHeroUploadingTitle', { defaultValue: 'Uploading your file' })
+        : t('uploadUI.uploadHeroProcessingTitle', { defaultValue: 'Preparing your document' })
     : isDragActive
       ? t('uploadUI.uploadHeroDraggingTitle', { defaultValue: 'Drop the file to start' })
       : t('uploadUI.uploadHeroIdleTitle', { defaultValue: 'اسحب ملف المحاضرة أو ارفعه الآن' });
 
   const description = externalLoading
-    ? t('uploadUI.uploadHeroUploadingHint', {
-        defaultValue: 'We are extracting the lecture content so the next actions can unlock smoothly.',
-      })
+    ? uploadStageCompleted
+      ? t('uploadUI.uploadHeroProcessingHint', {
+          defaultValue: 'The file bytes are uploaded. We are now preparing the document, extracting text, and registering it for the workspace.',
+        })
+      : t('uploadUI.uploadHeroUploadingHint', {
+          defaultValue: 'We are uploading the file securely before document preparation begins.',
+        })
     : isDragActive
       ? t('uploadUI.uploadHeroDraggingHint', {
           defaultValue: 'Release the file here and we will prepare it for summarization and question generation.',

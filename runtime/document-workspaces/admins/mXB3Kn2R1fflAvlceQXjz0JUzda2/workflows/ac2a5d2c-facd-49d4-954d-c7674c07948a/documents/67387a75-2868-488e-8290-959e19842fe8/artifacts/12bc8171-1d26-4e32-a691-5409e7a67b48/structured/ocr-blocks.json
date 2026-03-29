@@ -1,0 +1,41 @@
+[
+  {
+    "blockId": "py-ocr-1-1",
+    "type": "paragraph",
+    "source": "ocr",
+    "text": "<!-- image -->",
+    "pageNumber": 1,
+    "order": 1,
+    "level": null,
+    "confidence": null,
+    "bbox": null,
+    "rows": null,
+    "notes": null
+  },
+  {
+    "blockId": "py-ocr-1-2",
+    "type": "paragraph",
+    "source": "ocr",
+    "text": "Endocrinology Z352 Dr. Shimaa A. Sadek",
+    "pageNumber": 1,
+    "order": 2,
+    "level": null,
+    "confidence": null,
+    "bbox": null,
+    "rows": null,
+    "notes": null
+  },
+  {
+    "blockId": "py-ocr-1-3",
+    "type": "paragraph",
+    "source": "ocr",
+    "text": "Assistant professor of physiology",
+    "pageNumber": 1,
+    "order": 3,
+    "level": null,
+    "confidence": null,
+    "bbox": null,
+    "rows": null,
+    "notes": null
+  }
+]

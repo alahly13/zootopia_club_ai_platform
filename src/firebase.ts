@@ -9,6 +9,7 @@ import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 import { initializeFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import firebaseConfig from '../firebase-applet-config.json';
+import { runtimeConfig } from './config/runtime';
 
 const FIRESTORE_DB_ID = firebaseConfig.firestoreDatabaseId || 'zootopiaclub';
 
@@ -48,6 +49,6 @@ async function testConnection() {
   }
 }
 
-if (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+if (typeof window !== 'undefined' && runtimeConfig.isLocalDevelopment) {
   testConnection();
 }

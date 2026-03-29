@@ -24,7 +24,7 @@ import NextStepActionCard from '../components/NextStepActionCard';
 import { logger } from '../../../utils/logger';
 import { validateSupportedUploadFile } from '../../../utils/fileProcessors';
 import { mapUploadErrorMessage } from '../../../utils/uploadErrorMap';
-import { AI_FILE_PREPARATION_TIMEOUT_MS } from '../../../ai/config/timeoutBudgets';
+import { runtimeTimeouts } from '../../../config/runtime';
 import { cn } from '../../../utils';
 import { ProgressTracker } from '../../../components/status/ProgressTracker';
 import {
@@ -46,6 +46,8 @@ import {
 export const Dashboard = () => {
   const {
     user,
+    authMode,
+    authSession,
     checkLimit,
     incrementUsage,
     logActivity,
@@ -86,7 +88,7 @@ export const Dashboard = () => {
   const activePreparationControllerRef = React.useRef<AbortController | null>(null);
   const assessmentWorkspaceRef = React.useRef<HTMLElement | null>(null);
   const activePreparationStageRef = React.useRef<{
-    stageId: 'validate' | 'prepare' | 'extract' | 'store' | 'ready';
+    stageId: 'validate' | 'upload' | 'extract' | 'store' | 'ready';
     label: string;
   }>({
     stageId: 'validate',
@@ -100,7 +102,7 @@ export const Dashboard = () => {
     const pdfBudgetMs = isPdf ? 60_000 : 0;
 
     // Keep extraction bounded, but give realistic room for normal educational PDFs.
-    return Math.min(300_000, AI_FILE_PREPARATION_TIMEOUT_MS + perMbBudgetMs + pdfBudgetMs);
+    return Math.min(300_000, runtimeTimeouts.uploadPreparationBaseMs + perMbBudgetMs + pdfBudgetMs);
   }, []);
 
   const createPreparationStages = React.useCallback(() => ([
@@ -111,14 +113,14 @@ export const Dashboard = () => {
       status: 'active' as const,
     },
     {
-      id: 'prepare',
-      label: t('uploadUI.stagePreparingFile', { defaultValue: 'Preparing file' }),
+      id: 'upload',
+      label: t('uploadUI.stageUploadingFile', { defaultValue: 'Uploading file' }),
       progress: 0,
       status: 'pending' as const,
     },
     {
       id: 'extract',
-      label: t('uploadUI.stageExtractingText', { defaultValue: 'Extracting text' }),
+      label: t('uploadUI.stagePreparingDocument', { defaultValue: 'Preparing document' }),
       progress: 0,
       status: 'pending' as const,
     },
@@ -186,19 +188,26 @@ export const Dashboard = () => {
     error: unknown;
     file: File;
     timeoutMs: number;
-    stageId: 'validate' | 'prepare' | 'extract' | 'store' | 'ready';
+    stageId: 'validate' | 'upload' | 'extract' | 'store' | 'ready';
     stageLabel: string;
   }) => {
     const rawMessage = input.error instanceof Error ? input.error.message : String(input.error || '');
     const lowerMessage = rawMessage.toLowerCase();
-    const userMessage = mapUploadErrorMessage(rawMessage, t);
+    const isLocalRuntimeCredentialFailure =
+      (lowerMessage.includes('unauthenticated') && lowerMessage.includes('authentication credentials')) ||
+      lowerMessage.includes('invalid jwt signature');
+    const userMessage = isLocalRuntimeCredentialFailure
+      ? t('uploadUI.errorDocumentRuntimeCredentialFailure', {
+          defaultValue: 'File uploaded successfully, but local document preparation could not continue because the backend document runtime credentials were rejected. Your sign-in is still active.',
+        })
+      : mapUploadErrorMessage(rawMessage, t);
     const diagnosticsStageId =
       input.stageId === 'validate'
         ? 'validating_file'
-        : input.stageId === 'prepare'
-          ? 'preparing_file'
+        : input.stageId === 'upload'
+          ? 'uploading_file'
           : input.stageId === 'extract'
-            ? 'extracting_text'
+            ? 'preparing_document'
             : input.stageId === 'store'
               ? 'storing_extracted_context'
               : 'ready_for_generation';
@@ -231,6 +240,9 @@ export const Dashboard = () => {
     } else if (lowerMessage.includes('timed out') || lowerMessage.includes('timeout')) {
       category = 'timeout';
       code = 'extraction_timeout';
+    } else if (isLocalRuntimeCredentialFailure) {
+      category = 'internal';
+      code = 'document_runtime_backend_credentials_unavailable';
     } else if (lowerMessage.includes('extract') || lowerMessage.includes('process')) {
       category = 'parsing';
       code = 'text_extraction_failed';
@@ -291,11 +303,20 @@ export const Dashboard = () => {
       const uploadSequence = ++uploadSequenceRef.current;
       let didAttachDocument = false;
       let preparationTimeoutId: number | null = null;
+      const preparationTimeoutMs = resolvePreparationTimeoutMs(selectedFile);
 
       logger.info('File selected for upload', {
         fileName: selectedFile.name,
-        fileSize: selectedFile.size,
+        fileSizeBytes: selectedFile.size,
+        mimeType: selectedFile.type || 'application/octet-stream',
         userRole: user?.role,
+        currentUserId: user?.id || null,
+        authMode: authMode || 'none',
+        authSessionState: authSession.sessionState,
+        authSessionScope: authSession.sessionScopeKey,
+        authSessionExpiresAt: authSession.expiresAt,
+        uploadPreparationTimeoutMs: preparationTimeoutMs,
+        authSessionRefreshBudgetMs: runtimeTimeouts.authSessionApiMs,
       });
 
       if (user && !user.permissions.uploadFiles) {
@@ -316,7 +337,9 @@ export const Dashboard = () => {
       await invalidateExistingDocumentRuntime();
 
       const validateLabel = t('uploadUI.stageValidatingFile', { defaultValue: 'Validating file' });
-      const prepareLabel = t('uploadUI.stagePreparingFile', { defaultValue: 'Preparing file' });
+      const uploadLabel = t('uploadUI.stageUploadingFile', { defaultValue: 'Uploading file' });
+      const uploadCompleteLabel = t('uploadUI.stageUploadComplete', { defaultValue: 'File uploaded successfully' });
+      const prepareLabel = t('uploadUI.stagePreparingDocument', { defaultValue: 'Preparing document' });
       const storeLabel = t('uploadUI.stageStoringContext', { defaultValue: 'Storing extracted context' });
       const readyLabel = t('uploadUI.stageReadyForGeneration', { defaultValue: 'Ready for generation' });
       activePreparationStageRef.current = {
@@ -347,25 +370,24 @@ export const Dashboard = () => {
         });
         didAttachDocument = true;
 
-        setStatus('processing', prepareLabel);
+        setStatus('processing', uploadLabel);
         activePreparationStageRef.current = {
-          stageId: 'prepare',
-          label: prepareLabel,
+          stageId: 'upload',
+          label: uploadLabel,
         };
-        updateStage('prepare', {
+        updateStage('upload', {
           status: 'active',
-          label: prepareLabel,
+          label: uploadLabel,
           progress: 5,
           details: {
             progressReliable: false,
-            stage: 'preparing_file',
+            stage: 'uploading_file_bytes',
           },
         });
 
         const preparationController = new AbortController();
         activePreparationControllerRef.current = preparationController;
 
-        const preparationTimeoutMs = resolvePreparationTimeoutMs(selectedFile);
         const timeoutPromise = new Promise<never>((_, reject) => {
           preparationTimeoutId = window.setTimeout(() => {
             const timeoutError = new Error(t('uploadUI.errorProcessingTimedOut'));
@@ -374,26 +396,86 @@ export const Dashboard = () => {
           }, preparationTimeoutMs);
         });
 
-        activePreparationStageRef.current = {
-          stageId: 'prepare',
-          label: t('uploadUI.stageUploadingToRuntime', {
-            defaultValue: 'Uploading and registering file',
-          }),
-        };
-        updateStage('prepare', {
-          status: 'active',
-          label: activePreparationStageRef.current.label,
-          progress: 35,
-          details: {
-            progressReliable: false,
-            stage: 'uploading_to_document_runtime',
-          },
-        });
-        setStatus('processing', activePreparationStageRef.current.label);
-
         const intakePromise = intakeDocument(selectedFile, {
           signal: preparationController.signal,
           requestedPathway: 'local_extraction',
+          onUploadStateChange: (state) => {
+            if (uploadSequence !== uploadSequenceRef.current) {
+              return;
+            }
+
+            if (state.phase === 'completed') {
+              updateStage('upload', {
+                status: 'completed',
+                label: uploadCompleteLabel,
+                progress: 100,
+                details: {
+                  progressReliable: true,
+                  stage: 'file_upload_complete',
+                  uploadedBytes: state.loadedBytes,
+                  totalBytes: state.totalBytes,
+                },
+              });
+              activePreparationStageRef.current = {
+                stageId: 'extract',
+                label: prepareLabel,
+              };
+              updateStage('extract', {
+                status: 'active',
+                label: prepareLabel,
+                progress: 15,
+                details: {
+                  progressReliable: false,
+                  stage: 'document_preparation_started',
+                  requestUrl: state.requestUrl,
+                },
+              });
+              setStatus('processing', prepareLabel);
+              return;
+            }
+
+            const totalBytes = Math.max(state.totalBytes || selectedFile.size || 1, 1);
+            const uploadProgress = Math.max(
+              5,
+              Math.min(95, Math.round((state.loadedBytes / totalBytes) * 100))
+            );
+            activePreparationStageRef.current = {
+              stageId: 'upload',
+              label: uploadLabel,
+            };
+            updateStage('upload', {
+              status: 'active',
+              label: uploadLabel,
+              progress: uploadProgress,
+              details: {
+                progressReliable: true,
+                stage: 'uploading_file_bytes',
+                uploadedBytes: state.loadedBytes,
+                totalBytes: state.totalBytes,
+              },
+            });
+            setStatus('processing', uploadLabel);
+          },
+          onPreparationStateChange: () => {
+            if (uploadSequence !== uploadSequenceRef.current) {
+              return;
+            }
+
+            activePreparationStageRef.current = {
+              stageId: 'extract',
+              label: prepareLabel,
+            };
+            updateStage('extract', {
+              status: 'active',
+              label: prepareLabel,
+              progress: 15,
+              details: {
+                progressReliable: false,
+                stage: 'document_preparation_started',
+              },
+            });
+            setStatus('processing', prepareLabel);
+          },
         });
         const intakeResult = await Promise.race([intakePromise, timeoutPromise]);
         if (uploadSequence !== uploadSequenceRef.current) {
@@ -405,22 +487,10 @@ export const Dashboard = () => {
           throw new Error('No extractable text found in file.');
         }
 
-        updateStage('prepare', {
-          progress: 100,
-          status: 'completed',
-          label: t('uploadUI.stageUploadingToRuntime', {
-            defaultValue: 'Uploading and registering file',
-          }),
-          details: {
-            progressReliable: false,
-            stage: 'uploading_to_document_runtime',
-          },
-        });
-
         activePreparationStageRef.current = {
           stageId: 'extract',
-          label: t('uploadUI.stageBuildingArtifact', {
-            defaultValue: 'Building reusable document artifact',
+          label: t('uploadUI.stageExtractingText', {
+            defaultValue: 'Preparing document and extracting text',
           }),
         };
         updateStage('extract', {
@@ -429,7 +499,7 @@ export const Dashboard = () => {
           progress: 80,
           details: {
             progressReliable: false,
-            stage: 'building_document_artifact',
+            stage: 'extracting_text_from_uploaded_document',
             extractionStrategy: intakeResult.artifact.extractionStrategy,
           },
         });
@@ -442,9 +512,14 @@ export const Dashboard = () => {
         updateStage('extract', {
           progress: 100,
           status: 'completed',
-          label: t('uploadUI.stageBuildingArtifact', {
-            defaultValue: 'Building reusable document artifact',
+          label: t('uploadUI.stageExtractingText', {
+            defaultValue: 'Preparing document and extracting text',
           }),
+          details: {
+            progressReliable: false,
+            stage: 'document_preparation_complete',
+            extractionStrategy: intakeResult.artifact.extractionStrategy,
+          },
         });
         updateStage('store', {
           status: 'active',
@@ -525,7 +600,7 @@ export const Dashboard = () => {
         const { userMessage, enrichedError } = classifyPreparationFailure({
           error: uploadError,
           file: selectedFile,
-          timeoutMs: resolvePreparationTimeoutMs(selectedFile),
+          timeoutMs: preparationTimeoutMs,
           stageId: failureStage.stageId,
           stageLabel: failureStage.label,
         });
@@ -538,6 +613,9 @@ export const Dashboard = () => {
           rawError: uploadError?.message || String(uploadError),
           error: userMessage,
           diagnostics: enrichedError.errorInfo,
+          authMode: authMode || 'none',
+          authSessionState: authSession.sessionState,
+          authSessionExpiresAt: authSession.expiresAt,
         });
 
         updateStage(failureStage.stageId, {
@@ -600,6 +678,10 @@ export const Dashboard = () => {
       t,
       updateStage,
       user,
+      authMode,
+      authSession.expiresAt,
+      authSession.sessionScopeKey,
+      authSession.sessionState,
       documentRevision,
       documentId,
       runtimeOperationId,

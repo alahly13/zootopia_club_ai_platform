@@ -5,8 +5,9 @@ import { RouteLoader } from './RouteLoader';
 import { cn } from '../utils';
 import { logger } from '../utils/logger';
 import { useLoadLifecycle } from '../hooks/useLoadLifecycle';
+import { runtimeTimeouts } from '../config/runtime';
 
-const DEFAULT_ROUTE_TIMEOUT_MS = 12_000;
+const DEFAULT_ROUTE_TIMEOUT_MS = runtimeTimeouts.routeLoadMs;
 const ROUTE_IMPORT_PREPARING_MS = 500;
 
 type LazyWorkspaceRouteBoundaryProps = {

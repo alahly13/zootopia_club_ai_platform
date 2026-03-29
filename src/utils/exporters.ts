@@ -1,6 +1,6 @@
 import { jsPDF } from "jspdf";
 import "jspdf-autotable";
-import { Document, Packer, Paragraph, TextRun } from "docx";
+import { Document as DocxDocument, Packer, Paragraph, TextRun } from "docx";
 import { saveAs } from "file-saver";
 import html2canvas from "html2canvas";
 import { Quiz, COPYRIGHT } from "../utils";
@@ -40,6 +40,10 @@ type SnapshotExportContext = {
   resultTitle?: string;
   resultType?: string;
   sourceTool?: string | null;
+};
+
+type DomDocumentWithFonts = globalThis.Document & {
+  fonts?: FontFaceSet;
 };
 
 const THEME_STORAGE_KEY = 'zootopia_theme';
@@ -803,8 +807,9 @@ const renderMarkupToPdf = async (
     // Architecture-sensitive: text/quiz PDFs use a styled HTML snapshot first so
     // themed decoration, browser typography, and Arabic RTL shaping stay closer
     // to the on-screen preview/export surfaces. Legacy jsPDF layout remains fallback.
-    if ('fonts' in document && (document as Document & { fonts?: FontFaceSet }).fonts?.ready) {
-      await (document as Document & { fonts?: FontFaceSet }).fonts!.ready;
+    const documentWithFonts = document as DomDocumentWithFonts;
+    if ('fonts' in documentWithFonts && documentWithFonts.fonts?.ready) {
+      await documentWithFonts.fonts.ready;
     }
 
     await new Promise((resolve) => window.requestAnimationFrame(resolve));
@@ -880,8 +885,9 @@ export const exportElementToPDF = async (input: {
   });
 
   try {
-    if ('fonts' in document && (document as Document & { fonts?: FontFaceSet }).fonts?.ready) {
-      await (document as Document & { fonts?: FontFaceSet }).fonts!.ready;
+    const documentWithFonts = document as DomDocumentWithFonts;
+    if ('fonts' in documentWithFonts && documentWithFonts.fonts?.ready) {
+      await documentWithFonts.fonts.ready;
     }
 
     await waitForAnimationFrame();
@@ -986,8 +992,9 @@ export const exportElementToImage = async (input: {
   });
 
   try {
-    if ('fonts' in document && (document as Document & { fonts?: FontFaceSet }).fonts?.ready) {
-      await (document as Document & { fonts?: FontFaceSet }).fonts!.ready;
+    const documentWithFonts = document as DomDocumentWithFonts;
+    if ('fonts' in documentWithFonts && documentWithFonts.fonts?.ready) {
+      await documentWithFonts.fonts.ready;
     }
 
     await waitForAnimationFrame();
@@ -1095,7 +1102,7 @@ const legacyExportToPDF = async (quiz: Quiz, topicImage?: string | null, options
   const metadataLine = buildMetadataSummaryLine(options?.metadata);
   const backgroundDataUrl = await loadDocumentBackgroundDataUrl(themeMode);
 
-  const doc = new jsPDF();
+  const doc: any = new jsPDF();
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
   let y = 40;
@@ -1428,7 +1435,7 @@ export const exportToDocx = async (quiz: Quiz, options?: ExportOptions) => {
     spacing: { before: 800 },
   }));
 
-  const doc = new Document({
+  const doc = new DocxDocument({
     sections: [{ children }],
   });
 
@@ -1465,7 +1472,7 @@ const legacyExportTextToPDF = async (title: string, content: string, options?: E
   const metadataLine = buildMetadataSummaryLine(options?.metadata);
   const backgroundDataUrl = await loadDocumentBackgroundDataUrl(themeMode);
 
-  const doc = new jsPDF();
+  const doc: any = new jsPDF();
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
   let y = 40;

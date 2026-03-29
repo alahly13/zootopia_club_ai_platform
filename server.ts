@@ -46,6 +46,7 @@ import {
 import { applySecurityHeaders } from './server/securityHeaders';
 import { createRouteRateLimiter } from './server/rateLimit';
 import { buildProviderSecuritySummary } from './server/providerSecuritySummary';
+import { createServerRuntimeConfig, isAllowedOrigin } from './server/runtimeConfig';
 import { createActorContext } from './server/documentRuntime/actorScope.js';
 import {
   DocumentArtifactStore,
@@ -82,6 +83,13 @@ import {
   AI_SERVER_HEADERS_TIMEOUT_MS,
   AI_SERVER_REQUEST_TIMEOUT_MS,
 } from './src/ai/config/timeoutBudgets.js';
+import {
+  DOCUMENT_RUNTIME_PYTHON_EXECUTABLE,
+  DOCUMENT_RUNTIME_PYTHON_EXTRACTION_ENABLED,
+  DOCUMENT_RUNTIME_PYTHON_SCRIPT_PATH,
+  DOCUMENT_RUNTIME_STORAGE_ROOT,
+  shouldAllowDocumentRuntimeMemoryFallback,
+} from './server/documentRuntime/config.js';
 
 dotenv.config();
 
@@ -96,10 +104,49 @@ async function startServer() {
   const parsedPort = Number.parseInt(process.env.PORT || "3000", 10);
   const PORT = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 3000;
   const isProduction = process.env.NODE_ENV === "production";
+  const runtimeConfig = createServerRuntimeConfig({
+    isProduction,
+    localPort: PORT,
+  });
 
   app.disable('x-powered-by');
   app.use((req, res, next) => {
     applySecurityHeaders(req, res, { isProduction });
+    next();
+  });
+  app.use((req, res, next) => {
+    const requestOrigin = typeof req.headers.origin === 'string' ? req.headers.origin : '';
+    const originAllowed = isAllowedOrigin(requestOrigin, runtimeConfig.allowedOrigins);
+
+    if (requestOrigin && originAllowed) {
+      const existingVary = String(res.getHeader('Vary') || '');
+      const requestedHeaders =
+        typeof req.headers['access-control-request-headers'] === 'string' &&
+        req.headers['access-control-request-headers'].trim()
+          ? req.headers['access-control-request-headers']
+          : 'Authorization, Content-Type, x-zootopia-file-name, x-zootopia-file-type, x-zootopia-document-pathway';
+
+      res.setHeader('Access-Control-Allow-Origin', requestOrigin);
+      res.setHeader(
+        'Vary',
+        existingVary ? `${existingVary}, Origin` : 'Origin'
+      );
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', requestedHeaders);
+      res.setHeader('Access-Control-Max-Age', '86400');
+    }
+
+    if (req.method === 'OPTIONS') {
+      if (requestOrigin && !originAllowed) {
+        return res.status(403).json({
+          success: false,
+          error: 'Origin not allowed.',
+        });
+      }
+
+      return res.status(204).end();
+    }
+
     next();
   });
   app.use(express.json({ limit: '50mb' }));
@@ -1095,6 +1142,34 @@ const buildReservedAdminFallbackUserData = (
   };
 };
 
+const buildTokenDerivedLocalFallbackUserData = (
+  decodedToken: admin.auth.DecodedIdToken
+): Record<string, unknown> | null => {
+  const accountScope = normalizeOptionalString((decodedToken as any)?.accountScope) || FULL_ACCOUNT_SCOPE;
+  const temporaryAccessType = normalizeOptionalString((decodedToken as any)?.temporaryAccessType);
+  const isTemporaryAccess =
+    (decodedToken as any)?.isTemporaryAccess === true ||
+    accountScope === FACULTY_FAST_ACCESS_SCOPE ||
+    temporaryAccessType === FACULTY_FAST_ACCESS_TYPE;
+
+  if (isTemporaryAccess) {
+    return null;
+  }
+
+  const signInProvider = normalizeOptionalString((decodedToken as any)?.firebase?.sign_in_provider);
+
+  return {
+    email: normalizeOptionalString(decodedToken?.email) || null,
+    role: normalizeRoleLabel((decodedToken as any)?.role),
+    adminLevel: normalizeOptionalString((decodedToken as any)?.adminLevel),
+    status: 'Active',
+    authProviders: signInProvider ? [signInProvider] : [],
+    accountScope,
+    isTemporaryAccess: false,
+    temporaryAccessType: null,
+  };
+};
+
 const resolveRoleContext = (
   decodedToken: admin.auth.DecodedIdToken,
   userData: Record<string, unknown> | undefined
@@ -1168,10 +1243,21 @@ const loadAuthBootstrapUserData = async (
       usedFallback: false,
     };
   } catch (error) {
-    const fallbackUserData = buildReservedAdminFallbackUserData(decodedToken);
-    if (!fallbackUserData || !isRecoverableAdminCredentialError(error)) {
+    if (!isRecoverableAdminCredentialError(error)) {
       throw error;
     }
+
+    const reservedAdminFallback = buildReservedAdminFallbackUserData(decodedToken);
+    const fallbackUserData =
+      reservedAdminFallback ||
+      buildTokenDerivedLocalFallbackUserData(decodedToken);
+    if (!fallbackUserData) {
+      throw error;
+    }
+
+    const fallbackMode = reservedAdminFallback
+      ? 'reserved_admin_identity'
+      : 'token_claims_snapshot';
 
     logDiagnostic('warn', 'auth.session.userdata_fallback', {
       area: 'auth',
@@ -1181,6 +1267,7 @@ const loadAuthBootstrapUserData = async (
       details: {
         email: decodedToken.email || null,
         reason: 'firebase_admin_credential_unavailable',
+        fallbackMode,
       },
     });
 
@@ -1303,7 +1390,7 @@ const buildStatusNotification = (name: string, status: string, reason?: string) 
           <h2>Welcome to Zootopia Club, ${name}!</h2>
           <p>Great news! Your account has been approved by our administrators.</p>
           <p>You can now log in and access all the features of the platform.</p>
-          <a href="${process.env.APP_URL || 'https://zootopiaclub.com'}/login" style="display: inline-block; padding: 10px 20px; background-color: #10b981; color: white; text-decoration: none; border-radius: 5px; margin-top: 15px;">Log In Now</a>
+          <a href="${runtimeConfig.publicAppUrl}/login" style="display: inline-block; padding: 10px 20px; background-color: #10b981; color: white; text-decoration: none; border-radius: 5px; margin-top: 15px;">Log In Now</a>
         `,
         internalMessage: 'Your account has been approved. Welcome to Zootopia Club!',
       };
@@ -1619,6 +1706,15 @@ const logAdminUserAction = async (
   ) => {
     const idToken = req.headers.authorization?.split('Bearer ')[1];
     if (!idToken) {
+      logDiagnostic('warn', 'auth.request_context_missing_token', {
+        area: 'auth',
+        route: req.path,
+        status: 'missing_token',
+        details: {
+          method: req.method,
+          expectedAuthType: expectedAuthType || 'any',
+        },
+      });
       return {
         ok: false as const,
         statusCode: 401,
@@ -1676,6 +1772,19 @@ const logAdminUserAction = async (
       });
 
       if (sessionValidation.ok === false) {
+        logDiagnostic('warn', 'auth.request_context_session_rejected', {
+          area: 'auth',
+          route: req.path,
+          userId: decodedToken.uid,
+          status: 'session_rejected',
+          details: {
+            method: req.method,
+            expectedAuthType: expectedAuthType || 'any',
+            code: sessionValidation.code || null,
+            statusCode: sessionValidation.statusCode,
+            sessionState: sessionValidation.session?.sessionState || null,
+          },
+        });
         return {
           ok: false as const,
           statusCode: sessionValidation.statusCode,
@@ -1689,6 +1798,17 @@ const logAdminUserAction = async (
       }
 
       if (expectedAuthType && sessionValidation.session.authType !== expectedAuthType) {
+        logDiagnostic('warn', 'auth.request_context_mode_mismatch', {
+          area: 'auth',
+          route: req.path,
+          userId: decodedToken.uid,
+          status: 'mode_mismatch',
+          details: {
+            method: req.method,
+            expectedAuthType,
+            actualAuthType: sessionValidation.session.authType,
+          },
+        });
         return {
           ok: false as const,
           statusCode: expectedAuthType === 'admin' ? 403 : 409,
@@ -2000,8 +2120,26 @@ const logAdminUserAction = async (
     authMiddleware,
     express.raw({ type: 'application/octet-stream', limit: '50mb' }),
     async (req, res) => {
+      let actorSummary:
+        | {
+            actorId: string;
+            authType: string;
+            scope: string;
+            actorRole: string;
+          }
+        | null = null;
+      let fileNameForLog: string | null = null;
+      let requestedPathwayForLog: string | null = null;
+      let fileSizeBytesForLog = 0;
+
       try {
         const actor = resolveDocumentActorContextFromRequest(req);
+        actorSummary = {
+          actorId: actor.actorId,
+          authType: actor.authType,
+          scope: actor.scope,
+          actorRole: actor.actorRole,
+        };
         const encodedFileNameHeader = Array.isArray(req.headers['x-zootopia-file-name'])
           ? req.headers['x-zootopia-file-name'][0]
           : req.headers['x-zootopia-file-name'];
@@ -2016,6 +2154,25 @@ const logAdminUserAction = async (
         const mimeType = normalizeOptionalString(encodedMimeTypeHeader) || 'application/octet-stream';
         const requestedPathway = normalizeDocumentProcessingPathway(requestedPathwayHeader);
         const fileBuffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || []);
+        fileNameForLog = fileName || null;
+        requestedPathwayForLog = requestedPathway;
+        fileSizeBytesForLog = fileBuffer.byteLength;
+
+        logDiagnostic('info', 'documents.intake.started', {
+          area: 'documents',
+          route: '/api/documents/intake',
+          userId: actor.actorId,
+          status: 'started',
+          details: {
+            authType: actor.authType,
+            workspaceScope: actor.scope,
+            actorRole: actor.actorRole,
+            fileName: fileName || null,
+            mimeType,
+            fileSizeBytes: fileBuffer.byteLength,
+            requestedPathway,
+          },
+        });
 
         if (!fileName) {
           return res.status(400).json({
@@ -2037,6 +2194,23 @@ const logAdminUserAction = async (
           mimeType,
           buffer: fileBuffer,
           requestedPathway,
+        });
+
+        logDiagnostic('info', 'documents.intake.completed', {
+          area: 'documents',
+          route: '/api/documents/intake',
+          userId: actor.actorId,
+          status: 'completed',
+          details: {
+            authType: actor.authType,
+            workspaceScope: actor.scope,
+            actorRole: actor.actorRole,
+            fileName,
+            documentId: result.document.documentId,
+            artifactId: result.artifact.artifactId,
+            operationId: result.operation.operationId,
+            processingPathway: result.document.processingPathway,
+          },
         });
 
         return res.json({
@@ -2082,6 +2256,24 @@ const logAdminUserAction = async (
               : message === 'DIRECT_FILE_MODE_DISABLED'
                 ? 409
                 : 400;
+
+        logDiagnostic('warn', 'documents.intake.failed', {
+          area: 'documents',
+          route: '/api/documents/intake',
+          userId: actorSummary?.actorId || undefined,
+          status: 'failed',
+          details: {
+            authType: actorSummary?.authType || null,
+            workspaceScope: actorSummary?.scope || null,
+            actorRole: actorSummary?.actorRole || null,
+            fileName: fileNameForLog,
+            requestedPathway: requestedPathwayForLog,
+            fileSizeBytes: fileSizeBytesForLog,
+            statusCode: status,
+            errorCode: message,
+            error: normalizeError(error),
+          },
+        });
 
         return res.status(status).json({
           success: false,
@@ -8544,7 +8736,31 @@ const logAdminUserAction = async (
   }
 
   const server = app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    const localBackendUrl = `http://localhost:${PORT}`;
+    const integratedFrontendMessage =
+      process.env.NODE_ENV !== "production"
+        ? `${localBackendUrl} (served through the same integrated Express + Vite runtime)`
+        : `Static frontend is served by the same backend origin when this process serves dist/`;
+
+    console.log('[runtime] ------------------------------------------------------------');
+    console.log(
+      `[runtime] mode=${process.env.NODE_ENV || 'development'} deployTarget=${runtimeConfig.deployTarget}`
+    );
+    console.log(`[runtime] backend=${localBackendUrl}`);
+    console.log(`[runtime] frontend=${integratedFrontendMessage}`);
+    console.log(`[runtime] publicAppUrl=${runtimeConfig.publicAppUrl}`);
+    console.log(
+      `[runtime] pythonExtraction=${DOCUMENT_RUNTIME_PYTHON_EXTRACTION_ENABLED ? 'enabled' : 'disabled'} executable=${DOCUMENT_RUNTIME_PYTHON_EXECUTABLE}`
+    );
+    console.log(`[runtime] pythonWorker=${DOCUMENT_RUNTIME_PYTHON_SCRIPT_PATH}`);
+    console.log(`[runtime] documentStorage=${DOCUMENT_RUNTIME_STORAGE_ROOT}`);
+    console.log(
+      `[runtime] documentRuntimeFallback=${shouldAllowDocumentRuntimeMemoryFallback() ? 'memory-enabled' : 'redis-backed'}`
+    );
+    console.log(
+      `[runtime] allowedOrigins=${runtimeConfig.allowedOrigins.length > 0 ? runtimeConfig.allowedOrigins.join(', ') : 'same-origin only'}`
+    );
+    console.log('[runtime] ------------------------------------------------------------');
   });
   // Keep server request ceilings slightly above the provider/client budgets so
   // the backend can return a structured timeout response instead of being cut

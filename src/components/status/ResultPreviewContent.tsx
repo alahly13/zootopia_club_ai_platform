@@ -149,8 +149,8 @@ const PreviewMarkdown: React.FC<{
             </blockquote>
           ),
           hr: () => <hr className={cn('my-6 border-dashed', exportThemeMode === 'dark' ? 'border-zinc-700' : 'border-zinc-200')} />,
-          code: ({ inline, children }) =>
-            inline ? (
+          code: ({ className, children }) =>
+            !className ? (
               <code
                 className={cn(
                   'rounded-md px-1.5 py-0.5 text-[0.9em] font-semibold',

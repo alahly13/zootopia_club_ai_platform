@@ -7,6 +7,7 @@ import { useAuth } from '../auth/AuthContext';
 import { auth } from '../firebase';
 import { formatPrice } from '../services/billing/pricingDisplayService';
 import { cleanString, getPaymentSessionId, hasSuccessfulPaymentFlag, stripPaymentCallbackParams } from '../utils/validators';
+import { buildAppUrl } from '../config/runtime';
 
 const DONATION_CURRENCY = 'EGP' as const;
 const DONATION_CONTEXT_STORAGE_KEY = 'zootopia_donation_payment_context';
@@ -226,8 +227,8 @@ const Donation = () => {
           currency: DONATION_CURRENCY,
           amountMode: params.amountMode,
           tierId: params.tierId || null,
-          successUrl: `${window.location.origin}/donation?success=true`,
-          cancelUrl: `${window.location.origin}/donation?cancelled=true`,
+          successUrl: buildAppUrl('/donation?success=true'),
+          cancelUrl: buildAppUrl('/donation?cancelled=true'),
         }),
       });
 

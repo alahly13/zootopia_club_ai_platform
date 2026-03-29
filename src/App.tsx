@@ -777,7 +777,7 @@ const MainApp = () => {
           {isCreditModalOpen ? (
             <CreditRequestModal
               isOpen={isCreditModalOpen}
-              onClose={() => setIsCreditModalOpen(false)}
+              onClose={() => setCreditModalVisibility(false)}
             />
           ) : null}
         </React.Suspense>
