@@ -54,6 +54,14 @@ export const StatusIndicator: React.FC<StatusIndicatorProps> = ({
   elapsedSeconds,
   durationMs,
 }) => {
+  /**
+   * Empty idle pills add visual noise without telling the user anything about
+   * the real runtime state. Hide them unless a meaningful message is present.
+   */
+  if (status === 'idle' && !message?.trim()) {
+    return null;
+  }
+
   const getStatusConfig = (status: AppStatus) => {
     switch (status) {
       case 'success':

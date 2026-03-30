@@ -13,12 +13,13 @@ import { logger } from '../utils/logger';
 
 const FAST_ACCESS_ENTITLEMENT_PATH_TO_PAGE_ID: Record<string, string> = {
   '/': 'generate',
-  // `/generate` must remain entitlement-equivalent to `/` because both routes
-  // intentionally represent the same Assessment entry surface.
+  '/home': 'generate',
+  // `/generate` must remain entitlement-equivalent to `/home` because both
+  // routes are part of the same upload-to-assessment workspace family.
   '/generate': 'generate',
-  // `/analysis` is the full-page view of the same shared upload/analysis
-  // workflow. Keep its entitlement aligned with the generator entry instead of
-  // treating it as a broader temporary-access surface.
+  // `/analysis` is the full-page view of the same shared document workflow.
+  // Keep its entitlement aligned with the upload/generator surface instead of
+  // treating it as a broader temporary-access area.
   '/analysis': 'generate',
   '/infographic': 'infographic',
 };

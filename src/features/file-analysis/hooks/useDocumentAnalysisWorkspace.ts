@@ -16,6 +16,7 @@ import { useToolScopedModelSelection } from '../../../hooks/useToolScopedModelSe
 import { ExportThemeMode } from '../../../utils/exporters';
 import { useResultPreviewThemeMode } from '../../../components/status/ResultPreview';
 import { buildDocumentContextRef } from '../../../services/documentRuntimeService';
+import { storeResult } from '../../../services/resultService';
 
 type UseDocumentAnalysisWorkspaceInput = {
   sourceTool?: string;
@@ -155,6 +156,35 @@ export const useDocumentAnalysisWorkspace = (
           setAnalysisTrace(result.trace);
         }
 
+        if (user?.id) {
+          /**
+           * Operational reference: generated analysis output must enter the
+           * shared 3-day result store so history, detached preview, and the
+           * existing branded export flow can reopen the same canonical result.
+           */
+          void storeResult(
+            user.id,
+            `Analysis: ${currentFileName}`,
+            'text',
+            JSON.stringify({
+              kind: 'analysis',
+              content: result?.text || '',
+              markdown: result?.text || '',
+              modelUsed: result?.modelUsed || activeModel.id,
+              fileName: currentFileName,
+            }),
+            sourceTool,
+            user.plan
+          ).catch((storeError) => {
+            logger.warn('Failed to persist document analysis result', {
+              area: 'analysis-workspace',
+              event: 'persist-analysis-result-failed',
+              fileName: currentFileName,
+              error: storeError,
+            });
+          });
+        }
+
         addNotification({
           title: t('analysisReady'),
           message: t('analysisReadyDesc', { name: currentFileName }),
@@ -185,7 +215,10 @@ export const useDocumentAnalysisWorkspace = (
       setError,
       setStages,
       setStatus,
+      sourceTool,
       t,
+      user?.id,
+      user?.plan,
       updateStage,
       documentContextRef,
     ]

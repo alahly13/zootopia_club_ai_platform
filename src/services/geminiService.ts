@@ -40,6 +40,14 @@ const withTimeout = <T>(promise: Promise<T>, timeoutMs: number, errorMessage: st
  * Maps raw API errors to user-friendly messages.
  */
 const mapErrorToMessage = (error: any): string => {
+  const structuredMessage =
+    typeof error?.errorInfo?.userMessage === 'string'
+      ? error.errorInfo.userMessage.trim()
+      : '';
+  if (structuredMessage) {
+    return structuredMessage;
+  }
+
   const message = error.message || "";
   
   if (message.includes("timeout") || message.includes("deadline")) {
@@ -47,6 +55,16 @@ const mapErrorToMessage = (error: any): string => {
   }
   if (message.includes("not found") || message.includes("404")) {
     return "The selected AI model is currently unavailable or not found. Please try switching to another model.";
+  }
+  if (
+    message.includes("expected oauth 2 access token") ||
+    message.includes("invalid authentication credentials") ||
+    message.includes("invalid authentication credential")
+  ) {
+    return "Generation reached the AI provider, but the server-side Gemini credentials were rejected. Please retry once. If it continues, the backend Gemini configuration needs attention.";
+  }
+  if (message.includes("session is invalid") || message.includes("sign in again")) {
+    return "Your session is no longer valid for AI generation. Please sign in again and retry.";
   }
   if (message.includes("not supported for generateContent")) {
     return "This model does not support content generation. Please choose a compatible model.";
@@ -62,6 +80,32 @@ const mapErrorToMessage = (error: any): string => {
   }
   
   return message || "An unexpected error occurred while communicating with the AI.";
+};
+
+const throwFriendlyError = (error: any, friendlyMessage: string): never => {
+  // Preserve backend/AI executor diagnostics while still mapping the visible
+  // message into calmer UX copy for cards, trackers, and retry surfaces.
+  const wrapped = new Error(friendlyMessage) as Error & {
+    errorInfo?: unknown;
+    traceId?: string;
+    trace?: unknown;
+    details?: unknown;
+  };
+
+  if (error?.errorInfo) {
+    wrapped.errorInfo = error.errorInfo;
+  }
+  if (error?.traceId) {
+    wrapped.traceId = error.traceId;
+  }
+  if (error?.trace) {
+    wrapped.trace = error.trace;
+  }
+  if (error?.details) {
+    wrapped.details = error.details;
+  }
+
+  throw wrapped;
 };
 
 export const analyzeDocument = async (
@@ -99,7 +143,7 @@ export const analyzeDocument = async (
   } catch (error: any) {
     const friendlyMessage = mapErrorToMessage(error);
     logger.error('AI analysis failed', { error: error.message, friendlyMessage });
-    throw new Error(friendlyMessage);
+    throwFriendlyError(error, friendlyMessage);
   }
 };
 
@@ -125,7 +169,7 @@ export const generateQuiz = async (request: QuizGenerationRequest) => {
   } catch (error: any) {
     const friendlyMessage = mapErrorToMessage(error);
     logger.error('Quiz generation failed', { error: error.message, friendlyMessage });
-    throw new Error(friendlyMessage);
+    throwFriendlyError(error, friendlyMessage);
   }
 };
 
@@ -150,7 +194,7 @@ export const generateInfographicData = async (request: InfographicGenerationRequ
   } catch (error: any) {
     const friendlyMessage = mapErrorToMessage(error);
     logger.error('Infographic generation failed', { error: error.message, friendlyMessage });
-    throw new Error(friendlyMessage);
+    throwFriendlyError(error, friendlyMessage);
   }
 };
 
@@ -188,7 +232,7 @@ export const chatWithAI = async (
   } catch (error: any) {
     const friendlyMessage = mapErrorToMessage(error);
     logger.error('Chat failed', { error: error.message, friendlyMessage });
-    throw new Error(friendlyMessage);
+    throwFriendlyError(error, friendlyMessage);
   }
 };
 
@@ -218,7 +262,7 @@ export const generateTopicImagePrompt = async (
   } catch (error: any) {
     const friendlyMessage = mapErrorToMessage(error);
     logger.error('Image prompt generation failed', { error: error.message, friendlyMessage });
-    throw new Error(friendlyMessage);
+    throwFriendlyError(error, friendlyMessage);
   }
 };
 
@@ -244,7 +288,7 @@ export const generateImage = async (prompt: string, size: "1K" | "2K" | "4K" = "
   } catch (error: any) {
     const friendlyMessage = mapErrorToMessage(error);
     logger.error('Image generation failed', { error: error.message, friendlyMessage });
-    throw new Error(friendlyMessage);
+    throwFriendlyError(error, friendlyMessage);
   }
 };
 
@@ -291,6 +335,6 @@ export const editImage = async (
   } catch (error: any) {
     const friendlyMessage = mapErrorToMessage(error);
     logger.error('Image editing failed', { error: error.message, friendlyMessage });
-    throw new Error(friendlyMessage);
+    throwFriendlyError(error, friendlyMessage);
   }
 };

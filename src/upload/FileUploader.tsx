@@ -97,7 +97,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({
   const supportedFormatBadges = ['PDF', 'DOCX', 'XLSX', 'TXT', 'CSV', 'PNG/JPG'];
 
   return (
-    <div className="relative space-y-6">
+    <div className="relative space-y-4">
       {!externalLoading ? (
         <div className="mb-2 flex items-center">
           <StatusIndicator status={status} message={message} />
@@ -116,7 +116,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({
       <div
         {...getRootProps()}
         className={cn(
-          'relative flex cursor-pointer flex-col items-center justify-center gap-5 overflow-hidden rounded-[2.4rem] border-2 border-dashed px-6 py-8 transition-all active:scale-[0.99] sm:px-8 sm:py-10',
+          'relative flex cursor-pointer flex-col items-center justify-center gap-4 overflow-hidden rounded-[2.4rem] border-2 border-dashed px-5 py-6 transition-all active:scale-[0.99] sm:px-6 sm:py-7',
           isDragActive
             ? 'border-emerald-400 bg-emerald-500/10 shadow-[0_0_0_1px_rgba(52,211,153,0.15)]'
             : 'border-zinc-200 bg-white/92 shadow-[0_18px_50px_rgba(15,23,42,0.08)] hover:border-emerald-300 dark:border-zinc-800 dark:bg-zinc-950/72 dark:hover:border-zinc-700'
@@ -148,14 +148,18 @@ const FileUploader: React.FC<FileUploaderProps> = ({
           </div>
         ) : (
           <>
-            <div className="absolute inset-x-0 top-0 h-40 bg-[radial-gradient(circle_at_top,rgba(16,185,129,0.16),transparent_60%)] opacity-80" />
+            <div className="absolute inset-x-0 top-0 h-32 bg-[radial-gradient(circle_at_top,rgba(16,185,129,0.16),transparent_60%)] opacity-80" />
 
-            <div className="relative z-10 flex h-20 w-20 items-center justify-center rounded-[2rem] bg-zinc-100 text-zinc-500 shadow-inner dark:bg-zinc-900 dark:text-zinc-300">
-              {isDragActive ? <FileStack size={34} /> : <Upload size={34} />}
+            <div className="relative z-10 flex h-16 w-16 items-center justify-center rounded-[1.5rem] bg-zinc-100 text-zinc-500 shadow-inner dark:bg-zinc-900 dark:text-zinc-300">
+              {isDragActive ? <FileStack size={28} /> : <Upload size={28} />}
             </div>
 
-            <div className="relative z-10 max-w-2xl space-y-3 text-center">
-              <div className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-zinc-100 px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
+            {/**
+              * Keep the idle uploader hero compact. This card is the primary
+              * entry CTA, so its action area should stay visible on first load.
+              */}
+            <div className="relative z-10 max-w-2xl space-y-2 text-center">
+              <div className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-zinc-100 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.18em] text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
                 <ShieldCheck size={13} />
                 <span>
                   {t('uploadUI.uploadFormatsSummary', {
@@ -164,11 +168,8 @@ const FileUploader: React.FC<FileUploaderProps> = ({
                 </span>
               </div>
 
-              <p className="text-2xl font-black tracking-tight text-zinc-900 dark:text-white sm:text-3xl">
+              <p className="text-lg font-black tracking-tight text-zinc-900 dark:text-white sm:text-xl">
                 {headline}
-              </p>
-              <p className="text-sm leading-relaxed text-zinc-500 dark:text-zinc-400 sm:text-base">
-                {description}
               </p>
             </div>
 
@@ -176,7 +177,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({
               {supportedFormatBadges.map((badge) => (
                 <span
                   key={badge}
-                  className="inline-flex items-center rounded-full border border-zinc-200 bg-white/80 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.16em] text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/80 dark:text-zinc-300"
+                  className="inline-flex items-center rounded-full border border-zinc-200 bg-white/80 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/80 dark:text-zinc-300"
                 >
                   {badge}
                 </span>

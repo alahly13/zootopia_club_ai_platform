@@ -306,7 +306,10 @@ export interface DocumentOperationState {
   stage:
     | 'validating'
     | 'storing_source'
+    | 'submitting_to_datalab'
+    | 'waiting_for_datalab'
     | 'extracting'
+    | 'finalizing_extraction'
     | 'persisting_artifact'
     | 'ready'
     | 'failed'

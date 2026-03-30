@@ -41,6 +41,26 @@ export class AIRouter {
     return safeContent.startsWith('[IMAGE_DATA:') ? safeContent : safeContent.substring(0, limit);
   }
 
+  private static throwExecutionError(response: AIResponse, fallbackMessage: string): never {
+    const error = new Error(response.error || fallbackMessage) as Error & {
+      errorInfo?: AIResponse['errorInfo'];
+      trace?: AIResponse['trace'];
+      traceId?: AIResponse['traceId'];
+    };
+
+    if (response.errorInfo) {
+      error.errorInfo = response.errorInfo;
+    }
+    if (response.trace) {
+      error.trace = response.trace;
+    }
+    if (response.traceId) {
+      error.traceId = response.traceId;
+    }
+
+    throw error;
+  }
+
   private static parseJsonResponse<T>(text: string, errorMessage: string): T {
     try {
       return JSON.parse(text) as T;
@@ -85,7 +105,9 @@ export class AIRouter {
       `Please analyze the document "${fileName}".`
     );
 
-    if (response.error) throw new Error(response.error);
+    if (response.error) {
+      this.throwExecutionError(response, 'Document analysis failed.');
+    }
     return response;
   }
 
@@ -144,7 +166,9 @@ export class AIRouter {
       "Please generate the quiz based on the provided content."
     );
 
-    if (response.error) throw new Error(response.error);
+    if (response.error) {
+      this.throwExecutionError(response, 'Quiz generation failed.');
+    }
 
     return this.parseJsonResponse<any[]>(response.text, "AI returned invalid quiz format. Please try again.");
   }
@@ -182,7 +206,9 @@ export class AIRouter {
       "Please generate the infographic data based on the provided content. Ensure the output strictly follows the requested JSON schema."
     );
 
-    if (response.error) throw new Error(response.error);
+    if (response.error) {
+      this.throwExecutionError(response, 'Infographic generation failed.');
+    }
 
     return this.parseJsonResponse<any>(response.text, "AI returned invalid infographic format.");
   }
@@ -238,7 +264,9 @@ export class AIRouter {
       contents
     );
 
-    if (response.error) throw new Error(response.error);
+    if (response.error) {
+      this.throwExecutionError(response, 'Chat generation failed.');
+    }
     return response.text;
   }
 
@@ -266,7 +294,9 @@ export class AIRouter {
       "Based on this scientific content, generate a highly descriptive, professional prompt for a state-of-the-art AI image generator."
     );
 
-    if (response.error) throw new Error(response.error);
+    if (response.error) {
+      this.throwExecutionError(response, 'Image prompt generation failed.');
+    }
     return response.text;
   }
 }

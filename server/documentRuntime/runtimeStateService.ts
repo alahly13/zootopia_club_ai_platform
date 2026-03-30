@@ -3,35 +3,34 @@ import {
   DOCUMENT_RUNTIME_DOCUMENT_TTL_SEC,
   DOCUMENT_RUNTIME_LOCK_TTL_MS,
   DOCUMENT_RUNTIME_OPERATION_TTL_SEC,
-  DOCUMENT_RUNTIME_REDIS_KEY_PREFIX,
-  DOCUMENT_RUNTIME_REDIS_URL,
+  DOCUMENT_RUNTIME_STATE_KEY_PREFIX,
   shouldAllowDocumentRuntimeMemoryFallback,
 } from './config.js';
 import {
-  RedisBackedStoreRegistry,
-  acquireRedisLock,
-  buildNamespacedRedisKey,
-  deleteRedisKey,
-  getRedisJson,
-  setRedisJson,
-} from '../cache/redisBackedStore.js';
+  FirestoreBackedStoreRegistry,
+  acquireStoreLock,
+  buildNamespacedStoreKey,
+  deleteStoreKey,
+  getStoreJson,
+  setStoreJson,
+} from '../cache/firestoreBackedStore.js';
 import {
   DocumentActorContext,
   DocumentOperationState,
   RuntimeActiveDocumentRef,
 } from './types.js';
 
-const registry = new RedisBackedStoreRegistry({
+const registry = new FirestoreBackedStoreRegistry({
   area: 'document-runtime',
-  redisUrl: DOCUMENT_RUNTIME_REDIS_URL,
+  collectionName: 'document_runtime_state',
   allowMemoryFallback: shouldAllowDocumentRuntimeMemoryFallback(),
   fallbackReason:
-    'Document runtime keeps an in-memory fallback for local development and CI when Redis is not provisioned.',
+    'Document runtime keeps an in-memory fallback for local development and CI when Firestore-backed runtime state is not configured.',
 });
 
 function buildActorKey(actor: DocumentActorContext, suffix: string): string {
-  return buildNamespacedRedisKey(
-    DOCUMENT_RUNTIME_REDIS_KEY_PREFIX,
+  return buildNamespacedStoreKey(
+    DOCUMENT_RUNTIME_STATE_KEY_PREFIX,
     actor.scope,
     actor.authType,
     actor.actorId,
@@ -48,9 +47,13 @@ export function buildDocumentRuntimeKeySet(actor: DocumentActorContext, document
 }
 
 export class RuntimeStateService {
+  configureFirestore(db: FirebaseFirestore.Firestore): void {
+    registry.configureFirestore(db);
+  }
+
   async setActiveDocument(actor: DocumentActorContext, payload: RuntimeActiveDocumentRef): Promise<void> {
     const adapter = await registry.getAdapter();
-    await setRedisJson(
+    await setStoreJson(
       adapter,
       buildActorKey(actor, 'active-doc'),
       payload,
@@ -60,12 +63,12 @@ export class RuntimeStateService {
 
   async getActiveDocument(actor: DocumentActorContext): Promise<RuntimeActiveDocumentRef | null> {
     const adapter = await registry.getAdapter();
-    return getRedisJson<RuntimeActiveDocumentRef>(adapter, buildActorKey(actor, 'active-doc'));
+    return getStoreJson<RuntimeActiveDocumentRef>(adapter, buildActorKey(actor, 'active-doc'));
   }
 
   async clearActiveDocument(actor: DocumentActorContext): Promise<void> {
     const adapter = await registry.getAdapter();
-    await deleteRedisKey(adapter, buildActorKey(actor, 'active-doc'));
+    await deleteStoreKey(adapter, buildActorKey(actor, 'active-doc'));
   }
 
   async setDocumentState(
@@ -74,7 +77,7 @@ export class RuntimeStateService {
     payload: Record<string, unknown>
   ): Promise<void> {
     const adapter = await registry.getAdapter();
-    await setRedisJson(
+    await setStoreJson(
       adapter,
       buildActorKey(actor, `extract:${documentId}`),
       payload,
@@ -87,12 +90,12 @@ export class RuntimeStateService {
     documentId: string
   ): Promise<T | null> {
     const adapter = await registry.getAdapter();
-    return getRedisJson<T>(adapter, buildActorKey(actor, `extract:${documentId}`));
+    return getStoreJson<T>(adapter, buildActorKey(actor, `extract:${documentId}`));
   }
 
   async clearDocumentState(actor: DocumentActorContext, documentId: string): Promise<void> {
     const adapter = await registry.getAdapter();
-    await deleteRedisKey(adapter, buildActorKey(actor, `extract:${documentId}`));
+    await deleteStoreKey(adapter, buildActorKey(actor, `extract:${documentId}`));
   }
 
   async setOperationState(
@@ -100,7 +103,7 @@ export class RuntimeStateService {
     operation: DocumentOperationState
   ): Promise<void> {
     const adapter = await registry.getAdapter();
-    await setRedisJson(
+    await setStoreJson(
       adapter,
       buildActorKey(actor, `ops:${operation.operationId}`),
       operation,
@@ -115,7 +118,7 @@ export class RuntimeStateService {
   ): Promise<DocumentOperationState | null> {
     const adapter = await registry.getAdapter();
     const key = buildActorKey(actor, `ops:${operationId}`);
-    const current = await getRedisJson<DocumentOperationState>(adapter, key);
+    const current = await getStoreJson<DocumentOperationState>(adapter, key);
     if (!current) {
       return null;
     }
@@ -125,7 +128,7 @@ export class RuntimeStateService {
       ...patch,
       updatedAt: new Date().toISOString(),
     };
-    await setRedisJson(adapter, key, next, DOCUMENT_RUNTIME_OPERATION_TTL_SEC);
+    await setStoreJson(adapter, key, next, DOCUMENT_RUNTIME_OPERATION_TTL_SEC);
     return next;
   }
 
@@ -134,12 +137,12 @@ export class RuntimeStateService {
     operationId: string
   ): Promise<DocumentOperationState | null> {
     const adapter = await registry.getAdapter();
-    return getRedisJson<DocumentOperationState>(adapter, buildActorKey(actor, `ops:${operationId}`));
+    return getStoreJson<DocumentOperationState>(adapter, buildActorKey(actor, `ops:${operationId}`));
   }
 
   async requestCancellation(actor: DocumentActorContext, operationId: string): Promise<void> {
     const adapter = await registry.getAdapter();
-    await setRedisJson(
+    await setStoreJson(
       adapter,
       buildActorKey(actor, `cancel:${operationId}`),
       {
@@ -152,7 +155,7 @@ export class RuntimeStateService {
 
   async isCancellationRequested(actor: DocumentActorContext, operationId: string): Promise<boolean> {
     const adapter = await registry.getAdapter();
-    const payload = await getRedisJson<{ cancelled?: boolean }>(
+    const payload = await getStoreJson<{ cancelled?: boolean }>(
       adapter,
       buildActorKey(actor, `cancel:${operationId}`)
     );
@@ -161,7 +164,7 @@ export class RuntimeStateService {
 
   async clearCancellationRequest(actor: DocumentActorContext, operationId: string): Promise<void> {
     const adapter = await registry.getAdapter();
-    await deleteRedisKey(adapter, buildActorKey(actor, `cancel:${operationId}`));
+    await deleteStoreKey(adapter, buildActorKey(actor, `cancel:${operationId}`));
   }
 
   async withDocumentLock<T>(
@@ -172,7 +175,7 @@ export class RuntimeStateService {
     const adapter = await registry.getAdapter();
     const lockKey = buildActorKey(actor, `locks:extract:${documentId}`);
     const token = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
-    const didAcquire = await acquireRedisLock(adapter, lockKey, token, DOCUMENT_RUNTIME_LOCK_TTL_MS);
+    const didAcquire = await acquireStoreLock(adapter, lockKey, token, DOCUMENT_RUNTIME_LOCK_TTL_MS);
 
     if (!didAcquire) {
       throw new Error('DOCUMENT_RUNTIME_LOCK_CONFLICT');
@@ -181,7 +184,7 @@ export class RuntimeStateService {
     try {
       return await callback();
     } finally {
-      await deleteRedisKey(adapter, lockKey);
+      await deleteStoreKey(adapter, lockKey);
     }
   }
 }

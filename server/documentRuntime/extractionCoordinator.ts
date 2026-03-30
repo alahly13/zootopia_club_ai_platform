@@ -2,14 +2,26 @@ import crypto from 'crypto';
 import { logDiagnostic } from '../diagnostics.js';
 import { actorWorkspaceResolver } from './actorWorkspaceResolver.js';
 import { DOCUMENT_EXTRACTION_VERSION, DOCUMENT_RUNTIME_ARTIFACT_TTL_SEC } from './config.js';
-import { documentStructureNormalizer } from './documentStructureNormalizer.js';
-import { normalizeWhitespace } from './extractionShared.js';
+import { datalabConvertService } from './datalabConvertService.js';
+import {
+  buildDocumentSections,
+  buildHeadingTree,
+  buildLanguageHints,
+  buildPageMap,
+  buildStructuredDocumentPayload,
+  createBlockId,
+  createSegmentId,
+  normalizeWhitespace,
+} from './extractionShared.js';
 import { fileTypeDetectionService } from './fileTypeDetectionService.js';
-import { hybridMergeService } from './hybridMergeService.js';
-import { nativeExtractionService } from './nativeExtractionService.js';
-import { ocrExtractionService } from './ocrExtractionService.js';
-import { pythonDocumentWorker } from './pythonDocumentWorker.js';
-import { DocumentActorContext, DocumentArtifactPayload, ExtractedArtifactEnvelope } from './types.js';
+import {
+  DocumentActorContext,
+  DocumentArtifactPayload,
+  DocumentOperationState,
+  DocumentPageSegment,
+  DocumentStructuredBlock,
+  ExtractedArtifactEnvelope,
+} from './types.js';
 
 type ExtractionCoordinatorInput = {
   actor: DocumentActorContext;
@@ -21,41 +33,298 @@ type ExtractionCoordinatorInput = {
   buffer: Buffer;
   sourcePath: string;
   sourceRelativePath: string;
+  reportStage?: (input: {
+    stage: Extract<
+      DocumentOperationState['stage'],
+      'submitting_to_datalab' | 'waiting_for_datalab' | 'finalizing_extraction'
+    >;
+    message: string;
+  }) => Promise<void> | void;
 };
 
-function readStringArray(record: Record<string, unknown> | null | undefined, key: string): string[] {
-  const value = record?.[key];
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-    : [];
+const PAGE_DELIMITER_PATTERN = /^\{(\d+)\}-{16,}\s*$/gm;
+const SINGLE_PAGE_DELIMITER_PATTERN = /^\{(\d+)\}-{16,}\s*$/;
+const TABLE_SEPARATOR_PATTERN = /^\|?(?:\s*:?-{2,}:?\s*\|)+\s*:?-{2,}:?\s*\|?$/;
+const LIST_ITEM_PATTERN = /^\s{0,3}(?:[-*+]|\d+[.)])\s+/;
+const HEADING_PATTERN = /^(#{1,6})\s+(.+)$/;
+
+function normalizeMarkdown(value: string): string {
+  return String(value || '')
+    .replace(/\r/g, '')
+    .trim();
 }
 
-function readWeakPdfPages(raw: Record<string, unknown> | null | undefined): number[] {
-  const metadata = raw?.metadata;
-  const metadataRecord =
-    metadata && typeof metadata === 'object' ? (metadata as Record<string, unknown>) : null;
-  const candidates = [
-    raw?.weakPages,
-    metadataRecord?.weakPages,
-    metadataRecord?.weakPageNumbers,
-  ];
+function maybeRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
 
-  for (const candidate of candidates) {
-    if (!Array.isArray(candidate)) {
+function stripInlineMarkdown(text: string): string {
+  return normalizeWhitespace(
+    String(text || '')
+      .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '$1')
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/[*_~]/g, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\\([\\`*_{}\[\]()#+\-.!])/g, '$1')
+  );
+}
+
+function parseTableRows(lines: string[]): string[][] {
+  return lines
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !TABLE_SEPARATOR_PATTERN.test(line))
+    .map((line) =>
+      line
+        .split('|')
+        .map((cell) => stripInlineMarkdown(cell))
+        .filter(Boolean)
+    )
+    .filter((row) => row.length > 0);
+}
+
+function blockText(block: DocumentStructuredBlock): string {
+  if (block.type === 'list_item') {
+    return block.text;
+  }
+
+  if (block.type === 'table') {
+    return (block.rows || [])
+      .map((row) => row.join(' | '))
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  if (block.type === 'note') {
+    return `Note: ${block.text}`;
+  }
+
+  return block.text;
+}
+
+function blocksFromMarkdownPage(
+  pageNumber: number,
+  markdown: string,
+  fileType: string
+): DocumentStructuredBlock[] {
+  const lines = markdown.split('\n');
+  const blocks: DocumentStructuredBlock[] = [];
+  const defaultSource: DocumentStructuredBlock['source'] = fileType === 'image' ? 'ocr' : 'text';
+  let order = 1;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const rawLine = lines[index];
+    const trimmed = rawLine.trim();
+
+    if (!trimmed || SINGLE_PAGE_DELIMITER_PATTERN.test(trimmed)) {
       continue;
     }
 
-    const pageNumbers = candidate
-      .map((value) => Number(value))
-      .filter((value) => Number.isFinite(value) && value > 0);
-    if (pageNumbers.length > 0) {
-      return pageNumbers;
+    if (trimmed.startsWith('```')) {
+      const codeLines: string[] = [];
+      index += 1;
+      while (index < lines.length && !lines[index].trim().startsWith('```')) {
+        const codeLine = stripInlineMarkdown(lines[index]);
+        if (codeLine) {
+          codeLines.push(codeLine);
+        }
+        index += 1;
+      }
+
+      const codeText = normalizeWhitespace(codeLines.join('\n'));
+      if (codeText) {
+        blocks.push({
+          blockId: createBlockId(pageNumber, order, codeText),
+          type: 'paragraph',
+          source: defaultSource,
+          text: codeText,
+          pageNumber,
+          order,
+          level: null,
+          rows: null,
+          notes: null,
+        });
+        order += 1;
+      }
+      continue;
     }
+
+    if (trimmed.includes('|')) {
+      const tableLines = [trimmed];
+      while (index + 1 < lines.length && lines[index + 1].trim().includes('|')) {
+        tableLines.push(lines[index + 1].trim());
+        index += 1;
+      }
+
+      const rows = parseTableRows(tableLines);
+      if (rows.length > 0) {
+        const tableText = rows.map((row) => row.join(' | ')).join('\n');
+        blocks.push({
+          blockId: createBlockId(pageNumber, order, tableText),
+          type: 'table',
+          source: defaultSource,
+          text: tableText,
+          pageNumber,
+          order,
+          level: null,
+          rows,
+          notes: null,
+        });
+        order += 1;
+        continue;
+      }
+    }
+
+    const headingMatch = trimmed.match(HEADING_PATTERN);
+    if (headingMatch) {
+      const depth = headingMatch[1].length;
+      const headingText = stripInlineMarkdown(headingMatch[2]);
+      if (headingText) {
+        blocks.push({
+          blockId: createBlockId(pageNumber, order, headingText),
+          type: depth <= 1 ? 'title' : depth === 2 ? 'heading' : 'subheading',
+          source: defaultSource,
+          text: headingText,
+          pageNumber,
+          order,
+          level: Math.min(6, depth),
+          rows: null,
+          notes: null,
+        });
+        order += 1;
+      }
+      continue;
+    }
+
+    if (LIST_ITEM_PATTERN.test(trimmed)) {
+      const listText = stripInlineMarkdown(trimmed.replace(LIST_ITEM_PATTERN, ''));
+      if (listText) {
+        blocks.push({
+          blockId: createBlockId(pageNumber, order, listText),
+          type: 'list_item',
+          source: defaultSource,
+          text: `- ${listText}`,
+          pageNumber,
+          order,
+          level: null,
+          rows: null,
+          notes: null,
+        });
+        order += 1;
+      }
+      continue;
+    }
+
+    if (trimmed.startsWith('>')) {
+      const noteText = stripInlineMarkdown(trimmed.replace(/^>\s?/, ''));
+      if (noteText) {
+        blocks.push({
+          blockId: createBlockId(pageNumber, order, noteText),
+          type: 'note',
+          source: defaultSource,
+          text: noteText,
+          pageNumber,
+          order,
+          level: null,
+          rows: null,
+          notes: null,
+        });
+        order += 1;
+      }
+      continue;
+    }
+
+    const paragraphText = stripInlineMarkdown(trimmed);
+    if (!paragraphText) {
+      continue;
+    }
+
+    blocks.push({
+      blockId: createBlockId(pageNumber, order, paragraphText),
+      type: 'paragraph',
+      source: defaultSource,
+      text: paragraphText,
+      pageNumber,
+      order,
+      level: null,
+      rows: null,
+      notes: null,
+    });
+    order += 1;
   }
 
-  return [];
+  return blocks;
 }
 
+function splitMarkdownPages(markdown: string): Array<{ pageNumber: number; markdown: string }> {
+  const normalized = normalizeMarkdown(markdown);
+  if (!normalized) {
+    return [];
+  }
+
+  const matches = Array.from(normalized.matchAll(PAGE_DELIMITER_PATTERN));
+  if (matches.length === 0) {
+    return [{ pageNumber: 1, markdown: normalized }];
+  }
+
+  const pages = matches
+    .map((match, index) => {
+      const start = (match.index || 0) + match[0].length;
+      const end = index + 1 < matches.length ? (matches[index + 1].index || normalized.length) : normalized.length;
+      const pageNumber = Number.parseInt(match[1], 10);
+      return {
+        pageNumber: Number.isFinite(pageNumber) ? pageNumber + 1 : index + 1,
+        markdown: normalized.slice(start, end).trim(),
+      };
+    })
+    .filter((page) => page.markdown.length > 0);
+
+  return pages.length > 0 ? pages : [{ pageNumber: 1, markdown: normalized.replace(PAGE_DELIMITER_PATTERN, '').trim() }];
+}
+
+function buildPageSegments(input: {
+  fileType: string;
+  markdown: string;
+}): DocumentPageSegment[] {
+  const defaultKind: DocumentPageSegment['kind'] = input.fileType === 'image' ? 'ocr' : 'native';
+
+  return splitMarkdownPages(input.markdown)
+    .map((page) => {
+      const blocks = blocksFromMarkdownPage(page.pageNumber, page.markdown, input.fileType);
+      const text = normalizeWhitespace(blocks.map((block) => blockText(block)).join('\n'));
+      if (!text) {
+        return null;
+      }
+
+      const headingCandidates = blocks
+        .filter((block) => block.type === 'title' || block.type === 'heading' || block.type === 'subheading')
+        .map((block) => block.text);
+
+      return {
+        segmentId: createSegmentId(page.pageNumber, text, defaultKind),
+        pageNumber: page.pageNumber,
+        label: `Page ${page.pageNumber}`,
+        text,
+        kind: defaultKind,
+        headingCandidates,
+        blocks,
+        tableCount: blocks.filter((block) => block.type === 'table').length,
+        listCount: blocks.filter((block) => block.type === 'list_item').length,
+      } satisfies DocumentPageSegment;
+    })
+    .filter(Boolean) as DocumentPageSegment[];
+}
+
+/**
+ * Datalab-backed extraction coordinator.
+ *
+ * Keep this backend-authoritative and single-engine per intake job. The
+ * runtime selector in `extractionEngine.ts` chooses between this coordinator
+ * and the isolated legacy path so upload requests never fan out into multiple
+ * competing extractors.
+ */
 export class ExtractionCoordinator {
   async extract(input: ExtractionCoordinatorInput): Promise<ExtractedArtifactEnvelope> {
     const strategy = await fileTypeDetectionService.resolveStrategy({
@@ -76,143 +345,32 @@ export class ExtractionCoordinator {
         mimeType: input.mimeType,
         fileType: strategy.detection.fileType,
         confidence: strategy.detection.confidence,
-        executionMode: strategy.executionMode,
         strategyId: strategy.strategyId,
         detectionHints: strategy.detection.hints,
       },
     });
 
-    const pythonResponse =
-      strategy.detection.supportsNativeExtraction || strategy.detection.supportsOcr
-        ? await pythonDocumentWorker.extract({
-            sourcePath: input.sourcePath,
-            fileName: input.fileName,
-            mimeType: input.mimeType,
-            mode: strategy.executionMode === 'marker' ? 'native' : strategy.executionMode,
-            fileType: strategy.detection.fileType,
-          })
-        : null;
-
-    const nativeResult =
-      strategy.nativePreferred || strategy.executionMode === 'native' || strategy.executionMode === 'hybrid'
-        ? await nativeExtractionService.extract(
-            {
-              fileType: strategy.detection.fileType,
-              fileName: input.fileName,
-              mimeType: input.mimeType,
-              buffer: input.buffer,
-              sourcePath: input.sourcePath,
-            },
-            pythonResponse
-          )
-        : null;
-
-    let ocrResult =
-      strategy.ocrPreferred || strategy.executionMode === 'ocr' || strategy.executionMode === 'hybrid'
-        ? await ocrExtractionService.extract(
-            {
-              fileType: strategy.detection.fileType,
-              fileName: input.fileName,
-              mimeType: input.mimeType,
-              buffer: input.buffer,
-              sourcePath: input.sourcePath,
-            },
-            pythonResponse
-          )
-        : null;
-
-    const weakPdfPages =
-      strategy.detection.fileType === 'pdf'
-        ? readWeakPdfPages(nativeResult?.raw || null)
-        : [];
-    const shouldRunLatePdfOcrFallback =
-      strategy.detection.fileType === 'pdf' &&
-      strategy.executionMode === 'native' &&
-      !ocrResult &&
-      weakPdfPages.length > 0;
-
-    let latePdfOcrResponse: Awaited<ReturnType<typeof pythonDocumentWorker.extract>> | null = null;
-    if (shouldRunLatePdfOcrFallback) {
-      latePdfOcrResponse = await pythonDocumentWorker.extract({
-        sourcePath: input.sourcePath,
-        fileName: input.fileName,
-        mimeType: input.mimeType,
-        mode: 'ocr',
-        fileType: strategy.detection.fileType,
-      });
-
-      ocrResult = await ocrExtractionService.extract(
-        {
-          fileType: strategy.detection.fileType,
-          fileName: input.fileName,
-          mimeType: input.mimeType,
-          buffer: input.buffer,
-          sourcePath: input.sourcePath,
-        },
-        latePdfOcrResponse
-      );
-    }
-
-    const effectiveExecutionMode =
-      strategy.executionMode === 'native' && ocrResult?.pageSegments.length ? 'hybrid' : strategy.executionMode;
-
-    const merged =
-      effectiveExecutionMode === 'hybrid'
-        ? hybridMergeService.merge({
-            native: nativeResult,
-            ocr: ocrResult,
-          })
-        : effectiveExecutionMode === 'ocr'
-          ? {
-              pageSegments: ocrResult?.pageSegments || [],
-              ocrBlocks: ocrResult?.ocrBlocks || [],
-              languageHints: ocrResult?.languageHints || [],
-              fullText: ocrResult?.fullText || '',
-              notes: ocrResult?.notes || [],
-            }
-          : {
-              pageSegments: nativeResult?.pageSegments || [],
-              ocrBlocks: [],
-              languageHints: nativeResult?.languageHints || [],
-              fullText: nativeResult?.fullText || '',
-              notes: nativeResult?.notes || [],
-          };
-
-    const usableSegments = merged.pageSegments.filter((segment) => {
-      const normalizedText = normalizeWhitespace(segment.text);
-      if (!normalizedText) {
-        return false;
-      }
-
-      if (segment.kind === 'image_payload') {
-        return true;
-      }
-
-      const meaningfulBlocks = segment.blocks.filter((block) => block.type !== 'note');
-      if (meaningfulBlocks.length > 0) {
-        return true;
-      }
-
-      return !/^ocr runtime unavailable\b/i.test(normalizedText);
+    const convertResult = await datalabConvertService.convert({
+      documentId: input.documentId,
+      workflowId: input.workflowId,
+      fileName: input.fileName,
+      mimeType: input.mimeType,
+      buffer: input.buffer,
+      reportStage: input.reportStage,
     });
 
-    if (usableSegments.length === 0 || !merged.fullText.trim()) {
-      logDiagnostic('warn', 'document_runtime.extraction_empty', {
-        area: 'document-runtime',
-        traceId: extractionTraceId,
-        stage: 'extract',
-        details: {
-          documentId: input.documentId,
-          workflowId: input.workflowId,
-          fileName: input.fileName,
-          fileType: strategy.detection.fileType,
-          executionMode: strategy.executionMode,
-          nativeEngine: nativeResult?.engine || null,
-          ocrEngine: ocrResult?.engine || null,
-          pythonErrors: pythonResponse?.errors || [],
-        },
+    const pageSegments = buildPageSegments({
+      fileType: strategy.detection.fileType,
+      markdown: convertResult.markdown,
+    });
+    const normalizedText = normalizeWhitespace(pageSegments.map((segment) => segment.text).join('\n\n'));
+
+    if (!normalizedText) {
+      throw Object.assign(new Error('No extractable text found in file.'), {
+        code: 'DATALAB_EMPTY_TEXT',
+        operationStage: 'finalizing_extraction' as const,
+        retryable: true,
       });
-      throw new Error('No extractable text found in file.');
     }
 
     const artifactId = crypto.randomUUID();
@@ -225,121 +383,117 @@ export class ExtractionCoordinator {
       artifactId
     );
 
-    const pipelineWarnings = Array.from(
-      new Set(
-        [
-          ...(nativeResult?.notes || []),
-          ...(ocrResult?.notes || []),
-          ...(merged.notes || []),
-          ...(pythonResponse?.notes || []),
-          ...(pythonResponse?.warnings || []),
-          ...(latePdfOcrResponse?.notes || []),
-          ...(latePdfOcrResponse?.warnings || []),
-          ...readStringArray(nativeResult?.raw || null, 'warnings'),
-          ...readStringArray(ocrResult?.raw || null, 'warnings'),
-          ...((pythonResponse?.errors || []).map((error) => `python:${error}`)),
-          ...((latePdfOcrResponse?.errors || []).map((error) => `python:late-ocr:${error}`)),
-        ]
-          .map((note) => normalizeWhitespace(String(note || '')))
-          .filter(Boolean)
-      )
-    );
-    const extractorChain = Array.from(
-      new Set(
-        [
-          ...readStringArray(nativeResult?.raw || null, 'extractorChain'),
-          ...readStringArray(ocrResult?.raw || null, 'extractorChain'),
-          ...readStringArray(pythonResponse?.native as Record<string, unknown> | null, 'extractorChain'),
-          ...readStringArray(pythonResponse?.ocr as Record<string, unknown> | null, 'extractorChain'),
-          ...readStringArray(pythonResponse?.docling as Record<string, unknown> | null, 'extractorChain'),
-          ...readStringArray(latePdfOcrResponse?.ocr as Record<string, unknown> | null, 'extractorChain'),
-        ]
-          .map((value) => normalizeWhitespace(value))
-          .filter(Boolean)
-      )
-    );
-    const fallbackChain = [
-      `strategy:${strategy.strategyId}`,
-      pythonResponse ? `python:${pythonResponse.ok ? 'ok' : 'degraded'}` : 'python:not-requested',
-      nativeResult?.engine ? `native:${nativeResult.engine}` : 'native:skipped',
-      ocrResult?.engine ? `ocr:${ocrResult.engine}` : 'ocr:skipped',
-      shouldRunLatePdfOcrFallback ? `ocr:late-pdf-weak-pages:${weakPdfPages.join(',')}` : 'ocr:late-pdf-weak-pages:none',
-      effectiveExecutionMode === 'hybrid' ? 'merge:hybrid' : `merge:${effectiveExecutionMode}`,
-    ];
+    const headingTree = buildHeadingTree(pageSegments);
+    const sections = buildDocumentSections({
+      pageSegments,
+      headingTree,
+    });
+    const languageHints = buildLanguageHints(normalizedText || convertResult.markdown);
+    const extractionDetails = maybeRecord(convertResult.raw);
+    const metadata = maybeRecord(extractionDetails?.metadata);
+    const qualityMetadata = maybeRecord(metadata?.quality_metadata);
+    const ocrUsed =
+      strategy.detection.fileType === 'image' ||
+      qualityMetadata?.ocr_detected === true ||
+      qualityMetadata?.ocrDetected === true;
+    const pageMap = buildPageMap(pageSegments, headingTree);
+    const warnings = convertResult.warnings;
 
-    const payload = documentStructureNormalizer.normalize({
-      artifactBase: {
-        artifactId,
-        documentId: input.documentId,
-        workflowId: input.workflowId,
-        sourceFileId: input.sourceFileId,
-        actorId: input.actor.actorId,
-        actorRole: input.actor.actorRole,
-        ownerActorId: input.actor.actorId,
-        ownerRole: input.actor.actorRole,
-        workspaceScope: input.actor.scope,
-        extractionVersion: DOCUMENT_EXTRACTION_VERSION,
-        extractionStrategy: strategy.strategyId,
-        processingPathway: 'local_extraction',
-        status: 'ready',
+    const payload: DocumentArtifactPayload = {
+      artifactId,
+      documentId: input.documentId,
+      workflowId: input.workflowId,
+      sourceFileId: input.sourceFileId,
+      actorId: input.actor.actorId,
+      actorRole: input.actor.actorRole,
+      ownerActorId: input.actor.actorId,
+      ownerRole: input.actor.actorRole,
+      workspaceScope: input.actor.scope,
+      extractionVersion: DOCUMENT_EXTRACTION_VERSION,
+      extractionStrategy: strategy.strategyId,
+      processingPathway: 'local_extraction',
+      status: 'ready',
+      fileType: strategy.detection.fileType,
+      sourceFileName: input.fileName,
+      sourceMimeType: input.mimeType,
+      paths: {
+        workspaceRootPath: artifactWorkspace.documentRootPath,
+        workspaceRelativeRootPath: artifactWorkspace.relativeDocumentRootPath,
+        originalFilePath: input.sourceRelativePath,
+        finalExtractedTextPath: actorWorkspaceResolver.toRelativePath(artifactWorkspace.cleanTextPath),
+        structuredJsonPath: actorWorkspaceResolver.toRelativePath(artifactWorkspace.structuredJsonPath),
+        normalizedMarkdownPath: actorWorkspaceResolver.toRelativePath(artifactWorkspace.normalizedMarkdownPath),
+        pageMapPath: actorWorkspaceResolver.toRelativePath(artifactWorkspace.pageMapPath),
+        ocrBlocksPath: null,
+        manifestPath: actorWorkspaceResolver.toRelativePath(artifactWorkspace.manifestPath),
+      },
+      fullText: normalizedText,
+      normalizedText,
+      normalizedMarkdown: normalizeMarkdown(convertResult.markdown),
+      structuredDocumentJson: buildStructuredDocumentPayload({
+        fileName: input.fileName,
         fileType: strategy.detection.fileType,
-        sourceFileName: input.fileName,
-        sourceMimeType: input.mimeType,
-        paths: {
-          workspaceRootPath: artifactWorkspace.documentRootPath,
-          workspaceRelativeRootPath: artifactWorkspace.relativeDocumentRootPath,
-          originalFilePath: input.sourceRelativePath,
-          finalExtractedTextPath: actorWorkspaceResolver.toRelativePath(artifactWorkspace.cleanTextPath),
-          structuredJsonPath: actorWorkspaceResolver.toRelativePath(artifactWorkspace.structuredJsonPath),
-          normalizedMarkdownPath: actorWorkspaceResolver.toRelativePath(artifactWorkspace.normalizedMarkdownPath),
-          pageMapPath: actorWorkspaceResolver.toRelativePath(artifactWorkspace.pageMapPath),
-          ocrBlocksPath: strategy.ocrPreferred || merged.ocrBlocks.length > 0
-            ? actorWorkspaceResolver.toRelativePath(artifactWorkspace.ocrBlocksPath)
-            : null,
-          manifestPath: actorWorkspaceResolver.toRelativePath(artifactWorkspace.manifestPath),
-        },
+        languageHints,
+        pageSegments,
+        headingTree,
         extractionMeta: {
           extractedAt: nowIso,
-          extractionMode: effectiveExecutionMode,
           detection: strategy.detection,
           strategyReason: strategy.reason,
-          extractorChain,
-          fallbackChain,
-          engines: {
-            native: nativeResult?.engine || null,
-            ocr: ocrResult?.engine || null,
-            pythonWorker: pythonResponse?.capabilities || null,
-            latePdfOcrWorker: latePdfOcrResponse?.capabilities || null,
-          },
-          warnings: pipelineWarnings,
+          provider: 'datalab-convert',
+          requestId: convertResult.requestId,
+          requestCheckUrl: convertResult.requestCheckUrl,
+          warnings,
+          extractorChain: ['datalab:convert'],
+          fallbackChain: [`strategy:${strategy.strategyId}`, 'engine:datalab-convert'],
           qualitySignals: {
-            usableSegmentCount: usableSegments.length,
-            pageSegmentCount: merged.pageSegments.length,
-            ocrBlockCount: merged.ocrBlocks.length,
-            textLength: merged.fullText.length,
-            weakPdfPages,
-            ocrUsed:
-              Boolean(ocrResult?.pageSegments.length) ||
-              merged.pageSegments.some((segment) => segment.kind === 'ocr' || segment.kind === 'hybrid'),
+            pageCount: pageSegments.length,
+            sectionCount: sections.length,
+            textLength: normalizedText.length,
+            ocrUsed,
           },
-          extractionDetails: {
-            native: nativeResult?.raw || null,
-            ocr: ocrResult?.raw || null,
-            docling: pythonResponse?.docling || null,
-            latePdfOcrAttempted: shouldRunLatePdfOcrFallback,
+          datalab: {
+            metadata,
+            versions: convertResult.versions,
           },
-          notes: pipelineWarnings,
         },
-        createdAt: nowIso,
-        updatedAt: nowIso,
-        expiresAt,
+      }),
+      pageMap,
+      ocrBlocks: [],
+      pageSegments,
+      headingTree,
+      extractionMeta: {
+        extractedAt: nowIso,
+        detection: strategy.detection,
+        strategyReason: strategy.reason,
+        provider: 'datalab-convert',
+        requestId: convertResult.requestId,
+        requestCheckUrl: convertResult.requestCheckUrl,
+        warnings,
+        extractorChain: ['datalab:convert'],
+        fallbackChain: [`strategy:${strategy.strategyId}`, 'engine:datalab-convert'],
+        qualitySignals: {
+          pageCount: pageSegments.length,
+          sectionCount: sections.length,
+          textLength: normalizedText.length,
+          ocrUsed,
+        },
+        datalab: {
+          metadata,
+          versions: convertResult.versions,
+          rawStatus: extractionDetails?.status || 'complete',
+        },
       },
-      pageSegments: merged.pageSegments,
-      ocrBlocks: merged.ocrBlocks,
-      languageHints: merged.languageHints,
-      docling: pythonResponse?.docling || null,
-      notes: pipelineWarnings,
-    });
+      languageHints,
+      sourceAttribution: pageSegments.map((segment) => ({
+        pageNumber: segment.pageNumber,
+        source: segment.kind === 'ocr' ? 'ocr' : 'text',
+        label: `page-${segment.pageNumber}-datalab-markdown`,
+      })),
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      expiresAt,
+    };
 
     logDiagnostic('info', 'document_runtime.extraction_completed', {
       area: 'document-runtime',
@@ -352,17 +506,12 @@ export class ExtractionCoordinator {
         fileName: input.fileName,
         fileType: payload.fileType,
         strategyId: strategy.strategyId,
-        executionMode: strategy.executionMode,
-        effectiveExecutionMode,
-        nativeEngine: nativeResult?.engine || null,
-        ocrEngine: ocrResult?.engine || null,
+        provider: 'datalab-convert',
+        requestId: convertResult.requestId,
         pageCount: payload.pageSegments.length,
         sectionCount: payload.structuredDocumentJson.sections.length,
         textLength: payload.normalizedText.length,
-        ocrBlockCount: payload.ocrBlocks.length,
-        weakPdfPages,
-        ocrUsed: Boolean(payload.ocrBlocks.length) || payload.pageSegments.some((segment) => segment.kind === 'ocr' || segment.kind === 'hybrid'),
-        warnings: pipelineWarnings,
+        warnings,
       },
     });
 

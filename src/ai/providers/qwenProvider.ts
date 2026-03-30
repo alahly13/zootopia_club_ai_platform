@@ -1,5 +1,7 @@
 import { AIRequestOptions, AIResponse, ProviderImplementation } from '../types';
 import { toCanonicalModelId } from '../models/modelRegistry';
+import { buildApiUrl } from '../../config/runtime';
+import { resolveAuthenticatedRequestContext } from '../../utils/authHeaders';
 
 export class QwenProvider implements ProviderImplementation {
   id = 'qwen' as const;
@@ -7,13 +9,17 @@ export class QwenProvider implements ProviderImplementation {
   async execute(options: AIRequestOptions, contents: any): Promise<AIResponse> {
     try {
       // Qwen is handled via backend to protect API keys
-      const response = await fetch('/api/ai/execute', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
+      const requestContext = await resolveAuthenticatedRequestContext({
+        baseHeaders: {
+          'Content-Type': 'application/json',
         },
+      });
+      const response = await fetch(buildApiUrl('/api/ai/execute'), {
+        method: 'POST',
+        headers: requestContext.headers,
         body: JSON.stringify({
           ...this.formatRequest(options, contents),
+          userId: requestContext.currentUser.uid,
         }),
       });
 

@@ -30,6 +30,7 @@ import { ProgressTracker } from '../../../components/status/ProgressTracker';
 import {
   cancelDocumentProcessing,
   deleteDocumentArtifact,
+  type DocumentRuntimeOperationState,
   intakeDocument,
 } from '../../../services/documentRuntimeService';
 
@@ -40,8 +41,9 @@ import {
  *
  * - Uploading a new file may replace the previous file explicitly.
  * - Removing the file must happen only through clearDocument().
- * - Assessment generation remains the primary landing workflow.
- * - Analysis stays a dedicated destination and must not be rendered inline here.
+ * - This standalone upload page is the primary authenticated entry surface.
+ * - Assessment generation stays a separate next-step workspace on `/generate`.
+ * - Do not fold the generator back into this page.
  */
 export const Dashboard = () => {
   const {
@@ -193,28 +195,87 @@ export const Dashboard = () => {
   }) => {
     const rawMessage = input.error instanceof Error ? input.error.message : String(input.error || '');
     const lowerMessage = rawMessage.toLowerCase();
+    const backendErrorInfo =
+      input.error &&
+      typeof input.error === 'object' &&
+      'errorInfo' in input.error &&
+      typeof (input.error as { errorInfo?: unknown }).errorInfo === 'object'
+        ? ((input.error as {
+            errorInfo?: {
+              code?: string;
+              stage?: string;
+              retryable?: boolean | null;
+            };
+          }).errorInfo || null)
+        : null;
+    const resolveUiStageFromBackendStage = (
+      stage: string | undefined,
+      fallbackStageId: 'validate' | 'upload' | 'extract' | 'store' | 'ready'
+    ) => {
+      switch ((stage || '').trim()) {
+        case 'validating':
+          return {
+            stageId: 'validate' as const,
+            stageLabel: t('uploadUI.stageValidatingFile', { defaultValue: 'Validating file' }),
+          };
+        case 'persisting_artifact':
+          return {
+            stageId: 'store' as const,
+            stageLabel: t('uploadUI.stageStoringContext', { defaultValue: 'Storing extracted context' }),
+          };
+        case 'ready':
+          return {
+            stageId: 'ready' as const,
+            stageLabel: t('uploadUI.stageReadyForGeneration', { defaultValue: 'Ready for generation' }),
+          };
+        case 'submitting_to_datalab':
+        case 'waiting_for_datalab':
+        case 'extracting':
+        case 'finalizing_extraction':
+          return {
+            stageId: 'extract' as const,
+            stageLabel: t('uploadUI.stagePreparingDocument', { defaultValue: 'Preparing document' }),
+          };
+        default:
+          return {
+            stageId: fallbackStageId,
+            stageLabel: input.stageLabel,
+          };
+      }
+    };
+    const resolvedFailureStage = resolveUiStageFromBackendStage(backendErrorInfo?.stage, input.stageId);
     const isLocalRuntimeCredentialFailure =
       (lowerMessage.includes('unauthenticated') && lowerMessage.includes('authentication credentials')) ||
       lowerMessage.includes('invalid jwt signature');
+    const isBackendExtractionTimeout =
+      lowerMessage.includes('datalab convert timed out') ||
+      lowerMessage.includes('status check timed out') ||
+      backendErrorInfo?.code === 'DATALAB_SUBMIT_TIMEOUT' ||
+      backendErrorInfo?.code === 'DATALAB_POLL_REQUEST_TIMEOUT' ||
+      backendErrorInfo?.code === 'DATALAB_CONVERT_TIMEOUT';
     const userMessage = isLocalRuntimeCredentialFailure
       ? t('uploadUI.errorDocumentRuntimeCredentialFailure', {
           defaultValue: 'File uploaded successfully, but local document preparation could not continue because the backend document runtime credentials were rejected. Your sign-in is still active.',
         })
-      : mapUploadErrorMessage(rawMessage, t);
+      : isBackendExtractionTimeout
+        ? t('uploadUI.errorProcessingTimedOut', {
+            defaultValue: 'The extraction service took too long to respond. Please retry.',
+          })
+        : mapUploadErrorMessage(rawMessage, t);
     const diagnosticsStageId =
-      input.stageId === 'validate'
+      resolvedFailureStage.stageId === 'validate'
         ? 'validating_file'
-        : input.stageId === 'upload'
+        : resolvedFailureStage.stageId === 'upload'
           ? 'uploading_file'
-          : input.stageId === 'extract'
+          : resolvedFailureStage.stageId === 'extract'
             ? 'preparing_document'
-            : input.stageId === 'store'
+            : resolvedFailureStage.stageId === 'store'
               ? 'storing_extracted_context'
               : 'ready_for_generation';
 
     let category: 'validation' | 'parsing' | 'timeout' | 'internal' = 'internal';
-    let code = 'unexpected_internal_exception';
-    let retryable = true;
+    let code = backendErrorInfo?.code || 'unexpected_internal_exception';
+    let retryable = backendErrorInfo?.retryable ?? true;
 
     if (lowerMessage.includes('unsupported file format')) {
       category = 'validation';
@@ -279,10 +340,124 @@ export const Dashboard = () => {
     };
 
     return {
+      stageId: resolvedFailureStage.stageId,
+      stageLabel: resolvedFailureStage.stageLabel,
       userMessage,
       enrichedError,
     };
   }, [t]);
+
+  const syncBackendOperationStage = React.useCallback((operation: DocumentRuntimeOperationState) => {
+    const backendLabel = operation.message?.trim() || t('uploadUI.stagePreparingDocument', {
+      defaultValue: 'Preparing document',
+    });
+
+    /**
+     * Backend runtime stages are authoritative once upload bytes are sent.
+     * Mirror those stages directly instead of animating synthetic loops.
+     */
+    switch (operation.stage) {
+      case 'submitting_to_datalab':
+      case 'waiting_for_datalab':
+      case 'extracting':
+      case 'finalizing_extraction':
+        activePreparationStageRef.current = {
+          stageId: 'extract',
+          label: backendLabel,
+        };
+        updateStage('extract', {
+          status: 'active',
+          label: backendLabel,
+          progress:
+            operation.stage === 'submitting_to_datalab'
+              ? 25
+              : operation.stage === 'waiting_for_datalab'
+                ? 55
+                : operation.stage === 'finalizing_extraction'
+                  ? 80
+                  : 45,
+          details: {
+            progressReliable: false,
+            stage: operation.stage,
+            backendStatus: operation.status,
+            operationId: operation.operationId,
+          },
+        });
+        setStatus('processing', backendLabel);
+        return;
+      case 'persisting_artifact':
+        updateStage('extract', {
+          status: 'completed',
+          label: t('uploadUI.stagePreparingDocument', { defaultValue: 'Preparing document' }),
+          progress: 100,
+          details: {
+            progressReliable: false,
+            stage: operation.stage,
+            backendStatus: operation.status,
+            operationId: operation.operationId,
+          },
+        });
+        activePreparationStageRef.current = {
+          stageId: 'store',
+          label: backendLabel,
+        };
+        updateStage('store', {
+          status: 'active',
+          label: backendLabel,
+          progress: 92,
+          details: {
+            progressReliable: false,
+            stage: operation.stage,
+            backendStatus: operation.status,
+            operationId: operation.operationId,
+          },
+        });
+        setStatus('processing', backendLabel);
+        return;
+      case 'ready':
+        updateStage('extract', {
+          status: 'completed',
+          label: t('uploadUI.stagePreparingDocument', { defaultValue: 'Preparing document' }),
+          progress: 100,
+          details: {
+            progressReliable: false,
+            stage: operation.stage,
+            backendStatus: operation.status,
+            operationId: operation.operationId,
+          },
+        });
+        updateStage('store', {
+          status: 'completed',
+          label: t('uploadUI.stageStoringContext', { defaultValue: 'Storing extracted context' }),
+          progress: 100,
+          details: {
+            progressReliable: false,
+            stage: operation.stage,
+            backendStatus: operation.status,
+            operationId: operation.operationId,
+          },
+        });
+        activePreparationStageRef.current = {
+          stageId: 'ready',
+          label: backendLabel,
+        };
+        updateStage('ready', {
+          status: 'active',
+          label: backendLabel,
+          progress: 95,
+          details: {
+            progressReliable: true,
+            stage: operation.stage,
+            backendStatus: operation.status,
+            operationId: operation.operationId,
+          },
+        });
+        setStatus('processing', backendLabel);
+        return;
+      default:
+        return;
+    }
+  }, [setStatus, t, updateStage]);
 
   const clearDashboardDocumentState = React.useCallback(() => {
     uploadSequenceRef.current += 1;
@@ -476,6 +651,13 @@ export const Dashboard = () => {
             });
             setStatus('processing', prepareLabel);
           },
+          onOperationStateChange: (operation) => {
+            if (uploadSequence !== uploadSequenceRef.current) {
+              return;
+            }
+
+            syncBackendOperationStage(operation);
+          },
         });
         const intakeResult = await Promise.race([intakePromise, timeoutPromise]);
         if (uploadSequence !== uploadSequenceRef.current) {
@@ -487,50 +669,38 @@ export const Dashboard = () => {
           throw new Error('No extractable text found in file.');
         }
 
-        activePreparationStageRef.current = {
-          stageId: 'extract',
-          label: t('uploadUI.stageExtractingText', {
-            defaultValue: 'Preparing document and extracting text',
-          }),
-        };
-        updateStage('extract', {
-          status: 'active',
-          label: activePreparationStageRef.current.label,
-          progress: 80,
-          details: {
-            progressReliable: false,
-            stage: 'extracting_text_from_uploaded_document',
-            extractionStrategy: intakeResult.artifact.extractionStrategy,
-          },
-        });
-        setStatus('processing', activePreparationStageRef.current.label);
+        const backendPreparationLabel =
+          intakeResult.operation.message ||
+          t('uploadUI.stagePreparingDocument', {
+            defaultValue: 'Preparing document',
+          });
 
-        activePreparationStageRef.current = {
-          stageId: 'store',
-          label: storeLabel,
-        };
+        // Once `/api/documents/intake` returns, the backend has already
+        // completed extraction and artifact persistence. Do not reintroduce
+        // fake intermediate post-response progress here.
         updateStage('extract', {
-          progress: 100,
           status: 'completed',
-          label: t('uploadUI.stageExtractingText', {
-            defaultValue: 'Preparing document and extracting text',
-          }),
+          label: backendPreparationLabel,
+          progress: 100,
           details: {
-            progressReliable: false,
-            stage: 'document_preparation_complete',
+            progressReliable: true,
+            stage: intakeResult.operation.stage,
+            backendStatus: intakeResult.operation.status,
             extractionStrategy: intakeResult.artifact.extractionStrategy,
           },
         });
         updateStage('store', {
-          status: 'active',
+          status: 'completed',
           label: storeLabel,
-          progress: 20,
+          progress: 100,
           details: {
-            progressReliable: false,
-            stage: 'storing_owner_scoped_artifact',
+            progressReliable: true,
+            stage: 'backend_artifact_persisted',
+            backendStatus: intakeResult.operation.status,
+            extractionStrategy: intakeResult.artifact.extractionStrategy,
+            textLength: text.length,
           },
         });
-        setStatus('processing', storeLabel);
         replaceDocument({
           file: selectedFile,
           fileName: intakeResult.document.fileName,
@@ -557,12 +727,12 @@ export const Dashboard = () => {
         });
 
         updateStage('store', {
-          progress: 100,
-          status: 'completed',
           label: storeLabel,
           details: {
-            progressReliable: false,
-            stage: 'storing_extracted_context',
+            progressReliable: true,
+            stage: 'backend_artifact_persisted',
+            backendStatus: intakeResult.operation.status,
+            extractionStrategy: intakeResult.artifact.extractionStrategy,
             textLength: text.length,
           },
         });
@@ -578,7 +748,7 @@ export const Dashboard = () => {
           label: readyLabel,
           progress: 100,
           details: {
-            progressReliable: false,
+            progressReliable: true,
             stage: 'ready_for_generation',
             textLength: text.length,
           },
@@ -597,7 +767,7 @@ export const Dashboard = () => {
         }
 
         const failureStage = activePreparationStageRef.current;
-        const { userMessage, enrichedError } = classifyPreparationFailure({
+        const { stageId, stageLabel, userMessage, enrichedError } = classifyPreparationFailure({
           error: uploadError,
           file: selectedFile,
           timeoutMs: preparationTimeoutMs,
@@ -609,7 +779,7 @@ export const Dashboard = () => {
           area: 'dashboard',
           event: 'document-preparation-failed',
           fileName: selectedFile.name,
-          stageId: failureStage.stageId,
+          stageId,
           rawError: uploadError?.message || String(uploadError),
           error: userMessage,
           diagnostics: enrichedError.errorInfo,
@@ -618,9 +788,9 @@ export const Dashboard = () => {
           authSessionExpiresAt: authSession.expiresAt,
         });
 
-        updateStage(failureStage.stageId, {
+        updateStage(stageId, {
           status: 'failed',
-          label: failureStage.label,
+          label: stageLabel,
           message: userMessage,
           details: {
             progressReliable: false,
@@ -675,6 +845,7 @@ export const Dashboard = () => {
       setStages,
       setStatus,
       setDocumentPreparationError,
+      syncBackendOperationStage,
       t,
       updateStage,
       user,
@@ -690,25 +861,11 @@ export const Dashboard = () => {
   );
 
   const handleUploadAnother = React.useCallback(() => {
-    if (window.location.hash === '#question-generator') {
-      window.history.replaceState(
-        {},
-        document.title,
-        `${window.location.pathname}${window.location.search}`
-      );
-    }
     clearDashboardDocumentState();
     toast(t('uploadUI.chooseAnotherFile', { defaultValue: 'Choose another file to continue.' }));
   }, [clearDashboardDocumentState, t]);
 
   const handleRemoveDocument = React.useCallback(() => {
-    if (window.location.hash === '#question-generator') {
-      window.history.replaceState(
-        {},
-        document.title,
-        `${window.location.pathname}${window.location.search}`
-      );
-    }
     clearDashboardDocumentState();
     toast.success(t('uploadUI.fileRemoved', { defaultValue: 'File removed.' }));
   }, [clearDashboardDocumentState, t]);
@@ -757,64 +914,40 @@ export const Dashboard = () => {
     navigate('/analysis');
   }, [navigate]);
 
-  const scrollToQuestionWorkspace = React.useCallback(() => {
-    const questionWorkspaceSection = assessmentWorkspaceRef.current;
-    if (!questionWorkspaceSection) {
-      return;
-    }
-
+  const handleOpenAssessmentWorkspace = React.useCallback(() => {
     /**
-     * `/generate` is already the canonical question-generation page.
-     * The CTA keeps the stable route and moves focus to the generator workspace
-     * instead of introducing a second redundant question route.
+     * Preserve this CTA as the canonical next-step transition after upload.
+     * The upload page owns intake and readiness; `/generate` owns tool execution.
      */
-    if (window.location.hash !== '#question-generator') {
-      window.history.replaceState(
-        {},
-        document.title,
-        `${window.location.pathname}${window.location.search}#question-generator`
-      );
-    }
+    navigate('/generate');
+  }, [navigate]);
 
-    questionWorkspaceSection.scrollIntoView({
-      behavior: 'smooth',
-      block: 'start',
-    });
-
-    window.setTimeout(() => {
-      questionWorkspaceSection.focus();
-    }, 260);
-  }, []);
-
-  React.useEffect(() => {
-    if (!isDocumentReady || window.location.hash !== '#question-generator') {
-      return;
-    }
-
-    const animationFrame = window.requestAnimationFrame(() => {
-      assessmentWorkspaceRef.current?.scrollIntoView({
-        behavior: 'smooth',
-        block: 'start',
-      });
-    });
-
-    return () => window.cancelAnimationFrame(animationFrame);
-  }, [isDocumentReady]);
+  /**
+   * The standalone upload page is now the primary landing surface.
+   * Keep the historical inline generator block inactive so future edits do not
+   * accidentally restore the pre-separation layout on `/home`.
+   */
+  const renderInlineAssessmentWorkspace = false;
 
   return (
-    <div className="space-y-8 sm:space-y-10">
+    <div className="space-y-6 sm:space-y-7">
       <motion.section
         initial={{ opacity: 0, y: 18 }}
         animate={{ opacity: 1, y: 0 }}
-        className="relative overflow-hidden rounded-[2.75rem] border border-zinc-200/80 bg-white/88 px-5 py-7 shadow-[0_30px_80px_rgba(15,23,42,0.08)] backdrop-blur-2xl dark:border-zinc-800/80 dark:bg-zinc-950/70 sm:px-7 sm:py-9 lg:px-10 lg:py-11"
+        className="relative overflow-hidden rounded-[2.75rem] border border-zinc-200/80 bg-white/88 px-4 py-5 shadow-[0_30px_80px_rgba(15,23,42,0.08)] backdrop-blur-2xl dark:border-zinc-800/80 dark:bg-zinc-950/70 sm:px-6 sm:py-6 lg:px-8 lg:py-7"
       >
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(16,185,129,0.12),transparent_40%),radial-gradient(circle_at_bottom_right,rgba(34,211,238,0.08),transparent_35%)]" />
         <div className="absolute -top-28 inset-e-0 h-56 w-56 rounded-full bg-emerald-500/10 blur-3xl" />
         <div className="absolute -bottom-24 inset-s-0 h-48 w-48 rounded-full bg-cyan-500/10 blur-3xl" />
 
-        <div className="relative z-10 mx-auto max-w-5xl space-y-6 sm:space-y-8">
-          <div className="space-y-4 text-center">
-            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-emerald-600 dark:text-emerald-400">
+        <div className="relative z-10 mx-auto max-w-4xl space-y-4 sm:space-y-5">
+          {/**
+            * Keep the landing intro intentionally compact so the uploader card
+            * and CTA remain visible on common laptop screens without an
+            * initial scroll.
+            */}
+          <div className="space-y-2 text-center">
+            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.18em] text-emerald-600 dark:text-emerald-400">
               <Sparkles size={14} />
               <span>
                 {t('uploadUI.uploadFirstEyebrow', {
@@ -823,19 +956,11 @@ export const Dashboard = () => {
               </span>
             </div>
 
-            <div className="space-y-3">
-              <h1 className="text-3xl font-black tracking-tight text-zinc-900 dark:text-white sm:text-5xl lg:text-[3.4rem]">
-                {t('uploadUI.uploadFirstTitle', {
-                  defaultValue: 'Upload your lecture once, then choose the next step with clarity.',
-                })}
-              </h1>
-              <p className="mx-auto max-w-3xl text-sm leading-relaxed text-zinc-500 dark:text-zinc-400 sm:text-base lg:text-lg">
-                {t('uploadUI.uploadFirstHint', {
-                  defaultValue:
-                    'Make the file the center of the workflow: upload it here, then continue into lecture summarization or question generation without visual clutter.',
-                })}
-              </p>
-            </div>
+            <h1 className="text-lg font-black tracking-tight text-zinc-900 dark:text-white sm:text-2xl">
+              {t('uploadUI.uploadFirstCompactTitle', {
+                defaultValue: 'Home Upload Workspace',
+              })}
+            </h1>
           </div>
 
           {!hasDocument ? (
@@ -904,7 +1029,7 @@ export const Dashboard = () => {
                       <Sparkles size={14} />
                       <span>
                         {t('uploadUI.assessmentHeroBadge', {
-                          defaultValue: 'Main generator flow',
+                          defaultValue: 'Shared document ready',
                         })}
                       </span>
                     </div>
@@ -989,9 +1114,9 @@ export const Dashboard = () => {
                         })}
                         description={t('uploadUI.generateQuestionsNowCtaDescription', {
                           defaultValue:
-                            'Stay on the main generator page and jump directly to the question-generation workspace below.',
+                            'Open the dedicated assessment generator workspace and keep using the same shared prepared file.',
                         })}
-                        onClick={scrollToQuestionWorkspace}
+                        onClick={handleOpenAssessmentWorkspace}
                       />
                     </div>
                   </motion.div>
@@ -1002,7 +1127,7 @@ export const Dashboard = () => {
         </div>
       </motion.section>
 
-      {isDocumentReady ? (
+      {renderInlineAssessmentWorkspace && isDocumentReady ? (
         <motion.section
           ref={assessmentWorkspaceRef}
           id="question-generator"

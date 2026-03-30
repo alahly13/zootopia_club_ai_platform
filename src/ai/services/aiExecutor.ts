@@ -13,6 +13,8 @@ import { aiCache } from './cacheService';
 import { auth } from '../../firebase';
 import { getFallbackPlan } from '../fallbackPolicy';
 import { fetchDocumentPromptContext } from '../../services/documentRuntimeService';
+import { buildApiUrl } from '../../config/runtime';
+import { resolveAuthenticatedRequestContext } from '../../utils/authHeaders';
 import {
   AI_CLIENT_EXECUTION_TIMEOUT_MS,
   AI_PROVIDER_EXECUTION_TIMEOUT_MS,
@@ -284,6 +286,14 @@ export class AIExecutor {
       category = 'permission';
       code = 'PERMISSION_DENIED';
       userMessage = 'You do not have permission to perform this operation.';
+    } else if (
+      lower.includes('expected oauth 2 access token') ||
+      lower.includes('invalid authentication credentials') ||
+      lower.includes('failed to fetch a valid google oauth2 access token')
+    ) {
+      category = 'auth';
+      code = 'PROVIDER_CREDENTIALS_REJECTED';
+      userMessage = 'Generation reached the AI provider, but the backend Gemini credentials were rejected. Please retry once. If it continues, the server Gemini configuration needs attention.';
     } else if (lower.includes('auth') || lower.includes('unauthorized') || lower.includes('api key')) {
       category = 'auth';
       code = 'AUTHENTICATION_FAILED';
@@ -352,17 +362,15 @@ export class AIExecutor {
     canonicalModelId: string;
     executionMode: 'frontend' | 'backend';
   }> {
-    const token = await auth.currentUser?.getIdToken().catch(() => undefined);
-    if (!token) {
-      throw new Error('Authenticated session is required to authorize model access.');
-    }
-
-    const response = await fetch('/api/ai/authorize-model', {
-      method: 'POST',
-      headers: {
+    const requestContext = await resolveAuthenticatedRequestContext({
+      baseHeaders: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
       },
+    });
+
+    const response = await fetch(buildApiUrl('/api/ai/authorize-model'), {
+      method: 'POST',
+      headers: requestContext.headers,
       body: JSON.stringify({
         toolId: options.toolId,
         modelId: options.modelId,
@@ -817,17 +825,15 @@ export class AIExecutor {
     promptHash: string;
     resultTextLength: number;
   }): Promise<void> {
-    const token = await auth.currentUser?.getIdToken().catch(() => undefined);
-    if (!token) {
-      throw new Error('Authenticated session is required to finalize credits for this operation.');
-    }
-
-    const response = await fetch('/api/credits/consume-success', {
-      method: 'POST',
-      headers: {
+    const requestContext = await resolveAuthenticatedRequestContext({
+      baseHeaders: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
       },
+    });
+
+    const response = await fetch(buildApiUrl('/api/credits/consume-success'), {
+      method: 'POST',
+      headers: requestContext.headers,
       body: JSON.stringify(params),
     });
 
@@ -855,16 +861,23 @@ export class AIExecutor {
   }
 
   private static async executeBackend(options: AIRequestOptions, contents: any, context: any, traceId: string): Promise<AIResponse> {
-    const token = await auth.currentUser?.getIdToken().catch(() => undefined);
-    const currentUserId = auth.currentUser?.uid;
-
-    const response = await this.fetchWithTimeout('/api/ai/execute', {
-      method: 'POST',
-      headers: {
+    /**
+     * Keep backend AI execution on the same session-authenticated request path
+     * as document-runtime and auth-session APIs. Do not silently drop the
+     * bearer header here, otherwise generation can appear signed in while the
+     * execute request is detached from the active browser session.
+     */
+    const requestContext = await resolveAuthenticatedRequestContext({
+      baseHeaders: {
         'Content-Type': 'application/json',
         'x-trace-id': traceId,
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
+    });
+    const currentUserId = requestContext.currentUser.uid;
+
+    const response = await this.fetchWithTimeout(buildApiUrl('/api/ai/execute'), {
+      method: 'POST',
+      headers: requestContext.headers,
       body: JSON.stringify({
         toolId: options.toolId,
         userPrompt: typeof contents === 'string' ? contents : JSON.stringify(contents),
@@ -944,6 +957,17 @@ export class AIExecutor {
       if (result.errorInfo?.category === 'timeout') {
         // Timeout fallback would effectively double the wait budget for one
         // user action. Keep the shared ceiling bounded and surface the timeout.
+        return result;
+      }
+
+      if (result.errorInfo?.category === 'auth' || result.errorInfo?.category === 'permission') {
+        if (result.trace) {
+          result.trace.fallback = {
+            attempted: false,
+            reason: 'Authentication and permission failures must be fixed directly instead of retrying another model.',
+          };
+          options.observability?.onTraceUpdate?.(result.trace);
+        }
         return result;
       }
 

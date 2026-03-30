@@ -1,11 +1,7 @@
-import { createTraceId, logDiagnostic, normalizeError } from './diagnostics.js';
-import {
-  RedisBackedStoreRegistry,
-  buildNamespacedRedisKey,
-  deleteRedisKey,
-  getRedisJson,
-  setRedisJson,
-} from './cache/redisBackedStore.js';
+import admin from 'firebase-admin';
+import { getFirestore, Timestamp, type Firestore } from 'firebase-admin/firestore';
+import { buildRedisNamespacedKey } from './cache/namespaces.js';
+import { createTraceId, logDiagnostic } from './diagnostics.js';
 
 export type PlatformAuthType = 'normal' | 'fast_access' | 'admin';
 
@@ -73,11 +69,28 @@ export interface AuthSessionSnapshot {
   tokenAuthTimeSec: number;
 }
 
-type AuthSessionInvalidationRecord = {
+export type AuthSessionInvalidationRecord = {
   invalidatedAt: string;
   invalidatedAtSec: number;
   logoutReason: string;
 };
+
+export interface AuthSessionPersistence {
+  persistSession(session: AuthSessionSnapshot, ttlSec: number): Promise<void>;
+  persistHistoricalSession(session: AuthSessionSnapshot, ttlSec: number): Promise<void>;
+  readCurrentSession(authType: PlatformAuthType, uid: string): Promise<AuthSessionSnapshot | null>;
+  deleteCurrentSession(authType: PlatformAuthType, uid: string): Promise<void>;
+  readInvalidationRecord(
+    authType: PlatformAuthType,
+    uid: string
+  ): Promise<AuthSessionInvalidationRecord | null>;
+  persistInvalidationRecord(
+    authType: PlatformAuthType,
+    uid: string,
+    logoutReason: string,
+    ttlSec: number
+  ): Promise<AuthSessionInvalidationRecord>;
+}
 
 type AuthSessionBootstrapInput = {
   decodedToken: {
@@ -127,9 +140,15 @@ export class AuthSessionError extends Error {
 }
 
 const AUTH_SESSION_SCHEMA_VERSION = '2026-03-auth-session-v1';
-const AUTH_SESSION_REDIS_URL = process.env.REDIS_URL?.trim() || '';
-const AUTH_SESSION_REDIS_KEY_PREFIX =
+// Keep the legacy env name for namespace stability while Firestore becomes
+// the active auth-session persistence layer.
+const AUTH_SESSION_NAMESPACE_PREFIX =
+  process.env.AUTH_SESSION_STATE_KEY_PREFIX?.trim() ||
   process.env.AUTH_SESSION_REDIS_KEY_PREFIX?.trim() || 'zootopia:auth';
+const AUTH_SESSION_FIRESTORE_DATABASE_ID = 'zootopiaclub';
+const AUTH_SESSION_CURRENT_COLLECTION = 'auth_session_current';
+const AUTH_SESSION_HISTORY_COLLECTION = 'auth_session_history';
+const AUTH_SESSION_INVALIDATION_COLLECTION = 'auth_session_invalidations';
 const AUTH_SESSION_MAX_LIFETIME_SEC = Number.parseInt(
   process.env.AUTH_SESSION_MAX_LIFETIME_SEC || '10800',
   10
@@ -159,9 +178,6 @@ const AUTH_SESSION_INVALIDATION_TTL_SEC = Number.parseInt(
   process.env.AUTH_SESSION_INVALIDATION_TTL_SEC || '86400',
   10
 );
-const AUTH_SESSION_MEMORY_FALLBACK_ENABLED =
-  process.env.AUTH_SESSION_MEMORY_FALLBACK_ENABLED !== 'false' &&
-  process.env.NODE_ENV !== 'production';
 const ACTIVITY_TOUCH_INTERVAL_MS = 60_000;
 
 function normalizeOptionalString(value: unknown): string | null {
@@ -390,18 +406,39 @@ export function resolveSessionFingerprint(input: AuthSessionBootstrapInput): str
 }
 
 function buildAuthSessionNamespace(authType: PlatformAuthType, uid: string): string {
-  return buildNamespacedRedisKey(AUTH_SESSION_REDIS_KEY_PREFIX, authType, 'users', uid);
+  return buildRedisNamespacedKey(AUTH_SESSION_NAMESPACE_PREFIX, authType, 'users', uid);
 }
 
-function buildAuthSessionKeySet(authType: PlatformAuthType, uid: string, sessionId?: string) {
-  const namespace = buildAuthSessionNamespace(authType, uid);
+function buildAuthSessionStoreDocId(authType: PlatformAuthType, uid: string): string {
+  return `${authType}__${uid}`;
+}
 
-  return {
-    namespace,
-    current: buildNamespacedRedisKey(namespace, 'current'),
-    invalidation: buildNamespacedRedisKey(namespace, 'invalidation'),
-    session: sessionId ? buildNamespacedRedisKey(namespace, 'sessions', sessionId) : null,
-  };
+function buildAuthSessionHistoryDocId(session: AuthSessionSnapshot): string {
+  return `${session.authType}__${session.uid}__${session.sessionId}`;
+}
+
+function buildExpiryIso(ttlSec: number): string {
+  return new Date(Date.now() + ttlSec * 1000).toISOString();
+}
+
+function buildExpiryTimestampFromIso(expiresAtIso: string): Timestamp {
+  return Timestamp.fromDate(new Date(expiresAtIso));
+}
+
+function isExpiredTimestamp(value: unknown): boolean {
+  if (!(value instanceof Timestamp)) {
+    return false;
+  }
+
+  return value.toMillis() <= Date.now();
+}
+
+function resolveAuthSessionFirestore(): Firestore {
+  if (!admin.apps.length) {
+    throw new Error('AUTH_SESSION_FIRESTORE_UNAVAILABLE');
+  }
+
+  return getFirestore(admin.app(), AUTH_SESSION_FIRESTORE_DATABASE_ID);
 }
 
 function createBaseSnapshot(input: AuthSessionBootstrapInput & {
@@ -442,9 +479,9 @@ function createBaseSnapshot(input: AuthSessionBootstrapInput & {
     isTemporaryAccess:
       input.userData.isTemporaryAccess === true ||
       normalizeOptionalString(input.userData.accountScope) === 'faculty_science_fast_access',
-    cacheNamespace: buildNamespacedRedisKey(sessionNamespace, 'cache'),
+    cacheNamespace: buildRedisNamespacedKey(sessionNamespace, 'cache'),
     sessionNamespace,
-    documentRuntimeNamespace: buildNamespacedRedisKey('document-runtime', input.authType, input.decodedToken.uid),
+    documentRuntimeNamespace: buildRedisNamespacedKey('document-runtime', input.authType, input.decodedToken.uid),
     rehydrationStatus: input.rehydrationStatus,
     cacheHydrationStatus: input.cacheHydrationStatus,
     restoreFailureReason: null,
@@ -459,14 +496,118 @@ function createBaseSnapshot(input: AuthSessionBootstrapInput & {
   };
 }
 
-const registry = new RedisBackedStoreRegistry({
-  area: 'auth-session',
-  redisUrl: AUTH_SESSION_REDIS_URL,
-  allowMemoryFallback: AUTH_SESSION_MEMORY_FALLBACK_ENABLED,
-  fallbackReason: 'Redis is optional for local auth-session development but required for durable production isolation.',
-});
+class FirestoreAuthSessionPersistence implements AuthSessionPersistence {
+  private resolveDb(): Firestore {
+    return resolveAuthSessionFirestore();
+  }
+
+  async persistSession(session: AuthSessionSnapshot, ttlSec: number): Promise<void> {
+    const db = this.resolveDb();
+    const retentionExpiresAt = buildExpiryIso(ttlSec);
+    const batch = db.batch();
+
+    batch.set(db.collection(AUTH_SESSION_CURRENT_COLLECTION).doc(buildAuthSessionStoreDocId(session.authType, session.uid)), {
+      session,
+      updatedAt: Timestamp.now(),
+      expiresAt: buildExpiryTimestampFromIso(session.expiresAt),
+    });
+    batch.set(db.collection(AUTH_SESSION_HISTORY_COLLECTION).doc(buildAuthSessionHistoryDocId(session)), {
+      session,
+      updatedAt: Timestamp.now(),
+      expiresAt: buildExpiryTimestampFromIso(retentionExpiresAt),
+    });
+
+    await batch.commit();
+  }
+
+  async persistHistoricalSession(session: AuthSessionSnapshot, ttlSec: number): Promise<void> {
+    const db = this.resolveDb();
+    const expiresAt = buildExpiryIso(ttlSec);
+
+    await db.collection(AUTH_SESSION_HISTORY_COLLECTION).doc(buildAuthSessionHistoryDocId(session)).set({
+      session,
+      updatedAt: Timestamp.now(),
+      expiresAt: buildExpiryTimestampFromIso(expiresAt),
+    });
+  }
+
+  async readCurrentSession(authType: PlatformAuthType, uid: string): Promise<AuthSessionSnapshot | null> {
+    const snap = await this.resolveDb()
+      .collection(AUTH_SESSION_CURRENT_COLLECTION)
+      .doc(buildAuthSessionStoreDocId(authType, uid))
+      .get();
+    const session = snap.data()?.session as AuthSessionSnapshot | undefined;
+
+    if (!session || session.authType !== authType || session.uid !== uid) {
+      return null;
+    }
+
+    return session;
+  }
+
+  async deleteCurrentSession(authType: PlatformAuthType, uid: string): Promise<void> {
+    await this.resolveDb()
+      .collection(AUTH_SESSION_CURRENT_COLLECTION)
+      .doc(buildAuthSessionStoreDocId(authType, uid))
+      .delete();
+  }
+
+  async readInvalidationRecord(
+    authType: PlatformAuthType,
+    uid: string
+  ): Promise<AuthSessionInvalidationRecord | null> {
+    const snap = await this.resolveDb()
+      .collection(AUTH_SESSION_INVALIDATION_COLLECTION)
+      .doc(buildAuthSessionStoreDocId(authType, uid))
+      .get();
+    const record = snap.data()?.record as AuthSessionInvalidationRecord | undefined;
+    const expiresAt = snap.data()?.expiresAt;
+
+    if (isExpiredTimestamp(expiresAt)) {
+      await this.resolveDb()
+        .collection(AUTH_SESSION_INVALIDATION_COLLECTION)
+        .doc(buildAuthSessionStoreDocId(authType, uid))
+        .delete()
+        .catch(() => undefined);
+      return null;
+    }
+
+    if (!record || record.logoutReason === undefined) {
+      return null;
+    }
+
+    return record;
+  }
+
+  async persistInvalidationRecord(
+    authType: PlatformAuthType,
+    uid: string,
+    logoutReason: string,
+    ttlSec: number
+  ): Promise<AuthSessionInvalidationRecord> {
+    const db = this.resolveDb();
+    const expiresAt = buildExpiryIso(ttlSec);
+    const record: AuthSessionInvalidationRecord = {
+      invalidatedAt: new Date().toISOString(),
+      invalidatedAtSec: Math.floor(Date.now() / 1000),
+      logoutReason,
+    };
+
+    await db.collection(AUTH_SESSION_INVALIDATION_COLLECTION).doc(buildAuthSessionStoreDocId(authType, uid)).set({
+      record,
+      updatedAt: Timestamp.now(),
+      expiresAt: buildExpiryTimestampFromIso(expiresAt),
+    });
+
+    return record;
+  }
+}
 
 export class AuthSessionService {
+  constructor(
+    private readonly persistence: AuthSessionPersistence = new FirestoreAuthSessionPersistence()
+  ) {}
+
   /**
    * Hard session expiry is anchored to Firebase `auth_time`, not to silent ID
    * token refreshes. Reloads and background refreshes must not extend a session
@@ -512,28 +653,20 @@ export class AuthSessionService {
     uid: string,
     reason: string
   ): Promise<void> {
-    const adapter = await registry.getAdapter();
     const nowIso = new Date().toISOString();
-    const nowSec = Math.floor(Date.now() / 1000);
     const siblingAuthTypes = (['normal', 'fast_access', 'admin'] as PlatformAuthType[]).filter(
       (candidate) => candidate !== authType
     );
 
     for (const siblingAuthType of siblingAuthTypes) {
-      const siblingKeys = buildAuthSessionKeySet(siblingAuthType, uid);
-
-      await setRedisJson(
-        adapter,
-        siblingKeys.invalidation,
-        {
-          invalidatedAt: nowIso,
-          invalidatedAtSec: nowSec,
-          logoutReason: reason,
-        } satisfies AuthSessionInvalidationRecord,
+      await this.persistence.persistInvalidationRecord(
+        siblingAuthType,
+        uid,
+        reason,
         AUTH_SESSION_INVALIDATION_TTL_SEC
       );
 
-      const currentSiblingSession = await getRedisJson<AuthSessionSnapshot>(adapter, siblingKeys.current);
+      const currentSiblingSession = await this.persistence.readCurrentSession(siblingAuthType, uid);
       if (!currentSiblingSession) {
         continue;
       }
@@ -549,16 +682,11 @@ export class AuthSessionService {
         lastValidatedAt: nowIso,
       };
 
-      if (siblingKeys.session) {
-        await setRedisJson(
-          adapter,
-          siblingKeys.session,
-          invalidatedSiblingSession,
-          AUTH_SESSION_INVALIDATION_TTL_SEC
-        );
-      }
-
-      await deleteRedisKey(adapter, siblingKeys.current);
+      await this.persistence.persistHistoricalSession(
+        invalidatedSiblingSession,
+        AUTH_SESSION_INVALIDATION_TTL_SEC
+      );
+      await this.persistence.deleteCurrentSession(siblingAuthType, uid);
 
       logDiagnostic('info', 'auth.session.sibling_invalidated', {
         area: 'auth',
@@ -574,29 +702,18 @@ export class AuthSessionService {
   }
 
   private async persistSession(session: AuthSessionSnapshot, ttlSec: number): Promise<void> {
-    const adapter = await registry.getAdapter();
-    const keys = buildAuthSessionKeySet(session.authType, session.uid, session.sessionId);
-
-    await setRedisJson(adapter, keys.current, session, ttlSec);
-
-    if (keys.session) {
-      await setRedisJson(adapter, keys.session, session, ttlSec);
-    }
+    await this.persistence.persistSession(session, ttlSec);
   }
 
   private async readCurrentSession(authType: PlatformAuthType, uid: string): Promise<AuthSessionSnapshot | null> {
-    const adapter = await registry.getAdapter();
-    const keys = buildAuthSessionKeySet(authType, uid);
-    return getRedisJson<AuthSessionSnapshot>(adapter, keys.current);
+    return this.persistence.readCurrentSession(authType, uid);
   }
 
   private async readInvalidationRecord(
     authType: PlatformAuthType,
     uid: string
   ): Promise<AuthSessionInvalidationRecord | null> {
-    const adapter = await registry.getAdapter();
-    const keys = buildAuthSessionKeySet(authType, uid);
-    return getRedisJson<AuthSessionInvalidationRecord>(adapter, keys.invalidation);
+    return this.persistence.readInvalidationRecord(authType, uid);
   }
 
   private async persistInvalidationRecord(
@@ -604,15 +721,12 @@ export class AuthSessionService {
     uid: string,
     logoutReason: string
   ): Promise<void> {
-    const adapter = await registry.getAdapter();
-    const keys = buildAuthSessionKeySet(authType, uid);
-    const invalidationRecord: AuthSessionInvalidationRecord = {
-      invalidatedAt: new Date().toISOString(),
-      invalidatedAtSec: Math.floor(Date.now() / 1000),
+    await this.persistence.persistInvalidationRecord(
+      authType,
+      uid,
       logoutReason,
-    };
-
-    await setRedisJson(adapter, keys.invalidation, invalidationRecord, AUTH_SESSION_INVALIDATION_TTL_SEC);
+      AUTH_SESSION_INVALIDATION_TTL_SEC
+    );
   }
 
   private isSessionExpired(session: AuthSessionSnapshot): boolean {
@@ -625,7 +739,6 @@ export class AuthSessionService {
     uid: string,
     reason: string
   ): Promise<AuthSessionSnapshot | null> {
-    const adapter = await registry.getAdapter();
     const current = await this.readCurrentSession(authType, uid);
 
     await this.persistInvalidationRecord(authType, uid, reason);
@@ -647,11 +760,8 @@ export class AuthSessionService {
       lastValidatedAt: new Date().toISOString(),
     };
 
-    const keys = buildAuthSessionKeySet(authType, uid, current.sessionId);
-    if (keys.session) {
-      await setRedisJson(adapter, keys.session, invalidated, AUTH_SESSION_INVALIDATION_TTL_SEC);
-    }
-    await deleteRedisKey(adapter, keys.current);
+    await this.persistence.persistHistoricalSession(invalidated, AUTH_SESSION_INVALIDATION_TTL_SEC);
+    await this.persistence.deleteCurrentSession(authType, uid);
     return invalidated;
   }
 
@@ -733,6 +843,7 @@ export class AuthSessionService {
         authType: persistedSession.authType,
         modeMismatch: persistedSession.modeMismatch,
         sessionSource: persistedSession.sessionSource,
+        persistence: 'firestore',
         cacheNamespace: persistedSession.cacheNamespace,
         ttlSec,
         remainingLifetimeSec,

@@ -19,7 +19,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { MainLayout } from './components/MainLayout';
 import { AuthScopedDocumentBoundary } from './components/AuthScopedDocumentBoundary';
-import { Dashboard } from './features/assessment-tool';
+import { AssessmentGeneratorPage, Dashboard } from './features/assessment-tool';
 import { AppStartupRecovery } from './components/AppStartupRecovery';
 import Login from './auth/Login';
 import EmailVerification from './auth/EmailVerification';
@@ -167,85 +167,34 @@ const PaymentVerifier = () => {
   return null;
 };
 
-const SHARED_ASSESSMENT_ENTRY_PATH = '/generate';
-const ADMIN_ONLY_PATH_PREFIXES = [
-  '/admin',
-  '/communication-center',
-  '/admin-settings',
-] as const;
-
-function resolveRequestedPath(state: unknown): string | null {
-  if (!state || typeof state !== 'object' || !('from' in state)) {
-    return null;
-  }
-
-  const from = (state as {
-    from?: { pathname?: unknown; search?: unknown; hash?: unknown };
-  }).from;
-
-  if (!from || typeof from !== 'object') {
-    return null;
-  }
-
-  const pathname = typeof from.pathname === 'string' ? from.pathname : '';
-  if (!pathname.startsWith('/')) {
-    return null;
-  }
-
-  const search = typeof from.search === 'string' ? from.search : '';
-  const hash = typeof from.hash === 'string' ? from.hash : '';
-
-  return `${pathname}${search}${hash}`;
-}
+const PRIMARY_UPLOAD_HOME_PATH = '/home';
 
 function resolvePostAuthPath(input: {
-  isAdmin: boolean;
-  authMode: 'normal' | 'fast_access' | 'admin' | null;
   user: User | null;
-  state: unknown;
 }): string {
-  const requestedPath = resolveRequestedPath(input.state);
-
   /**
-   * ROUTING CONTRACT
+   * ENTRY ROUTING CONTRACT
    * ------------------------------------------------------------------
-   * The shared Assessment / Quiz Generator is the stable authenticated
-   * entry surface for both admins and normal users. Admin authority stays
-   * intact through dedicated admin routes and backend checks, not by forcing
-   * `/admin` as the default landing page for every restored session.
+   * Fresh platform entry must always normalize onto the standalone upload-first
+   * home page for signed-in users instead of restoring a previous workspace
+   * route or sending admins to `/admin` by default.
    *
-  * Preserve explicit deep links when they are safe:
-  * - returning to a previously requested in-app route is allowed
-  * - admin-only routes still require admin identity
-  * - invalid or ambiguous login redirects collapse to the shared generator
-  */
-  if (!requestedPath || requestedPath === '/' || requestedPath === '/login') {
-    if (input.authMode === 'admin') {
-      return '/admin';
-    }
-
-    if (
-      isFacultyFastAccessUser(input.user) &&
-      (
-        isFastAccessProfileCompletionPending(input.user) ||
-        (input.user?.fastAccessCredits ?? 0) <= 0
-      )
-    ) {
-      return '/account';
-    }
-
-    return SHARED_ASSESSMENT_ENTRY_PATH;
+   * Preserve only the fast-access account-completion exception here.
+   * After this first landing, regular in-app navigation continues normally.
+   *
+   * Do not reintroduce remembered-route restore behavior in this helper.
+   */
+  if (
+    isFacultyFastAccessUser(input.user) &&
+    (
+      isFastAccessProfileCompletionPending(input.user) ||
+      (input.user?.fastAccessCredits ?? 0) <= 0
+    )
+  ) {
+    return '/account';
   }
 
-  const isAdminOnlyPath = ADMIN_ONLY_PATH_PREFIXES.some(
-    (pathPrefix) => requestedPath === pathPrefix || requestedPath.startsWith(`${pathPrefix}/`)
-  );
-
-  if (isAdminOnlyPath && !input.isAdmin) {
-    return SHARED_ASSESSMENT_ENTRY_PATH;
-  }
-
-  return requestedPath;
+  return PRIMARY_UPLOAD_HOME_PATH;
 }
 
 const LoginRouteGuard: React.FC = () => {
@@ -297,11 +246,12 @@ const LoginRouteGuard: React.FC = () => {
    * SECURITY-SENSITIVE ROUTING NOTE
    * ------------------------------------------------------------------
    * Authenticated sessions must never remain on `/login` because it causes
-   * role-based landing ambiguity (especially after refresh/session restore).
+   * entry ambiguity during restore and refresh.
    *
    * Keep this post-auth redirect deterministic:
-   * - preserve a safe requested in-app path when available
-   * - otherwise land on the shared Assessment generator entry page
+   * - always land on the standalone upload-first home page
+   * - keep fast-access account-completion exceptions intact
+   * - do not restore the last visited workspace route from login state
    */
   if (!isAuthReady) {
     logRouteGuardDecision('waiting_for_bootstrap');
@@ -329,7 +279,7 @@ const LoginRouteGuard: React.FC = () => {
   }
 
   if (isAuthenticated) {
-    const nextPath = resolvePostAuthPath({ isAdmin, authMode, user, state: location.state });
+    const nextPath = resolvePostAuthPath({ user });
     logRouteGuardDecision('redirect_authenticated', {
       destination: nextPath,
     });
@@ -346,10 +296,10 @@ const RoleAwareHome: React.FC = () => {
    * ------------------------------------------------------------------
    * `/` remains a compatibility alias because many legacy flows still navigate
    * there after auth or account-state transitions. Normalize that alias onto
-   * the explicit generator route so refreshes, direct opens, and session
-   * restores all converge on one stable Assessment entry page.
+   * the explicit upload-first home route so refreshes, direct opens, and
+   * session restores all converge on one stable primary entry page.
    */
-  return <Navigate to={SHARED_ASSESSMENT_ENTRY_PATH} replace />;
+  return <Navigate to={PRIMARY_UPLOAD_HOME_PATH} replace />;
 };
 
 const MainApp = () => {
@@ -529,7 +479,8 @@ const MainApp = () => {
             }
           >
             <Route index element={<RoleAwareHome />} />
-            <Route path="generate" element={<Dashboard />} />
+            <Route path="home" element={<Dashboard />} />
+            <Route path="generate" element={<AssessmentGeneratorPage />} />
             <Route
               path="analysis"
               element={renderLazyRoute(

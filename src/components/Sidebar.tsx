@@ -91,7 +91,8 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onClose, isC
   
   const menuItems = [
     // Keep the top of the sidebar aligned with the product hierarchy:
-    // assessment first, analysis second, then the next-most-core creation tools.
+    // standalone upload/home first, assessment generation second, analysis third.
+    { id: 'home', label: t('uploadUI.uploadFirstCompactTitle', { defaultValue: 'Home Upload Workspace' }), icon: LayoutDashboard },
     { id: 'generate', label: t('uploadUI.assessmentSidebarLabel', { defaultValue: 'Quiz / Assessment Generation' }), icon: FileText },
     { id: 'analysis', label: t('uploadUI.analysisWorkspaceTitle', { defaultValue: 'Analysis Workspace' }), icon: BrainCircuit },
     { id: 'infographic', label: t('infographic'), icon: BarChart3 },

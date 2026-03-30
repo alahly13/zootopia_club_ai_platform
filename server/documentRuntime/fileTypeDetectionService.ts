@@ -2,7 +2,6 @@ import { normalizeUploadExtension } from '../../src/upload/documentFilePolicy.js
 import {
   DocumentFileType,
   DocumentTypeDetectionResult,
-  ExtractionExecutionMode,
   ExtractionStrategyResolution,
 } from './types.js';
 
@@ -10,14 +9,6 @@ type FileDetectionInput = {
   fileName: string;
   mimeType: string;
   buffer: Buffer;
-};
-
-type PdfTextDensityReport = {
-  totalPages: number;
-  pagesWithText: number;
-  sparseTextPages: number;
-  totalCharacters: number;
-  averageCharactersPerPage: number;
 };
 
 type FileSignature = 'pdf' | 'png' | 'jpeg' | 'webp' | 'zip' | 'unknown';
@@ -68,46 +59,18 @@ function detectFileSignature(buffer: Buffer): FileSignature {
   return 'unknown';
 }
 
-function resolveDetectedFileType(extensionType: DocumentFileType, signature: FileSignature): {
-  fileType: DocumentFileType;
-  confidence: DocumentTypeDetectionResult['confidence'];
-  hints: string[];
-} {
-  const hints: string[] = [`extension:${extensionType}`];
-
-  if (signature !== 'unknown') {
-    hints.push(`signature:${signature}`);
+function detectOfficeContainerType(buffer: Buffer): DocumentFileType | null {
+  const preview = buffer.toString('latin1', 0, Math.min(buffer.length, 4096)).toLowerCase();
+  if (preview.includes('word/')) {
+    return 'docx';
   }
-
-  if (signature === 'pdf') {
-    return {
-      fileType: 'pdf',
-      confidence: extensionType === 'pdf' ? 'high' : 'medium',
-      hints,
-    };
+  if (preview.includes('xl/')) {
+    return 'xlsx';
   }
-
-  if (signature === 'png' || signature === 'jpeg' || signature === 'webp') {
-    return {
-      fileType: 'image',
-      confidence: extensionType === 'image' ? 'high' : 'medium',
-      hints,
-    };
+  if (preview.includes('ppt/')) {
+    return 'pptx';
   }
-
-  if (signature === 'zip' && ['docx', 'xlsx', 'pptx'].includes(extensionType)) {
-    return {
-      fileType: extensionType,
-      confidence: 'high',
-      hints: [...hints, 'container:zip-office'],
-    };
-  }
-
-  return {
-    fileType: extensionType,
-    confidence: extensionType === 'unknown' ? 'low' : 'high',
-    hints,
-  };
+  return null;
 }
 
 function buildHints(fileType: DocumentFileType, mimeType: string, baseHints: string[]): string[] {
@@ -127,59 +90,57 @@ function buildHints(fileType: DocumentFileType, mimeType: string, baseHints: str
   return Array.from(hints);
 }
 
-async function inspectPdfTextDensity(buffer: Buffer): Promise<PdfTextDensityReport> {
-  const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  const loadingTask = pdfjsLib.getDocument({
-    data: new Uint8Array(buffer),
-  });
+function resolveDetectedFileType(input: {
+  extensionType: DocumentFileType;
+  signature: FileSignature;
+  buffer: Buffer;
+}): {
+  fileType: DocumentFileType;
+  confidence: DocumentTypeDetectionResult['confidence'];
+  hints: string[];
+} {
+  const hints: string[] = [`extension:${input.extensionType}`];
 
-  try {
-    const pdf = await loadingTask.promise;
-    let pagesWithText = 0;
-    let sparseTextPages = 0;
-    let totalCharacters = 0;
+  if (input.signature !== 'unknown') {
+    hints.push(`signature:${input.signature}`);
+  }
 
-    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-      const page = await pdf.getPage(pageNumber);
-      const content = await page.getTextContent();
-      const pageText = content.items
-        .map((item) => ('str' in item && typeof item.str === 'string' ? item.str : ''))
-        .join(' ')
-        .trim();
-      if (pageText.length > 20) {
-        pagesWithText += 1;
-      }
-      if (pageText.length > 0 && pageText.length < 80) {
-        sparseTextPages += 1;
-      }
-      if (pageText.length === 0) {
-        sparseTextPages += 1;
-      }
-      totalCharacters += pageText.length;
-    }
-
+  if (input.signature === 'pdf') {
     return {
-      totalPages: pdf.numPages,
-      pagesWithText,
-      sparseTextPages,
-      totalCharacters,
-      averageCharactersPerPage: pdf.numPages > 0 ? Math.round(totalCharacters / pdf.numPages) : 0,
+      fileType: 'pdf',
+      confidence: input.extensionType === 'pdf' ? 'high' : 'medium',
+      hints: [...hints, 'magic:pdf'],
     };
-  } finally {
-    const destroyResult = (loadingTask as { destroy?: () => unknown }).destroy?.();
-    if (destroyResult && typeof (destroyResult as Promise<unknown>).then === 'function') {
-      await destroyResult;
+  }
+
+  if (input.signature === 'png' || input.signature === 'jpeg' || input.signature === 'webp') {
+    return {
+      fileType: 'image',
+      confidence: input.extensionType === 'image' ? 'high' : 'medium',
+      hints: [...hints, `magic:${input.signature}`],
+    };
+  }
+
+  if (input.signature === 'zip') {
+    const officeType = detectOfficeContainerType(input.buffer);
+    if (officeType) {
+      return {
+        fileType: officeType,
+        confidence: input.extensionType === officeType ? 'high' : 'medium',
+        hints: [...hints, 'container:zip-office', `magic:${officeType}`],
+      };
     }
   }
+
+  return {
+    fileType: input.extensionType,
+    confidence: input.extensionType === 'unknown' ? 'low' : 'high',
+    hints,
+  };
 }
 
-function resolveDefaultExecutionMode(fileType: DocumentFileType): ExtractionExecutionMode {
-  if (fileType === 'image') return 'ocr';
-  if (fileType === 'pdf') return 'hybrid';
-  if (fileType === 'docx' || fileType === 'xlsx' || fileType === 'xls' || fileType === 'csv' || fileType === 'txt') {
-    return 'native';
-  }
-  return 'marker';
+function buildStrategyId(fileType: DocumentFileType): string {
+  return `datalab_convert_${fileType || 'unknown'}`;
 }
 
 export class FileTypeDetectionService {
@@ -187,7 +148,11 @@ export class FileTypeDetectionService {
     const extension = normalizeUploadExtension(input.fileName);
     const extensionType = inferFileType(extension);
     const signature = detectFileSignature(input.buffer);
-    const detected = resolveDetectedFileType(extensionType, signature);
+    const detected = resolveDetectedFileType({
+      extensionType,
+      signature,
+      buffer: input.buffer,
+    });
 
     return {
       fileType: detected.fileType,
@@ -195,7 +160,9 @@ export class FileTypeDetectionService {
       mimeType: input.mimeType,
       confidence: detected.confidence,
       isImage: detected.fileType === 'image',
-      supportsNativeExtraction: ['pdf', 'docx', 'xlsx', 'xls', 'csv', 'txt'].includes(detected.fileType),
+      supportsNativeExtraction: ['pdf', 'docx', 'xlsx', 'xls', 'csv', 'txt', 'pptx'].includes(
+        detected.fileType
+      ),
       supportsOcr: detected.fileType === 'image' || detected.fileType === 'pdf',
       hints: buildHints(detected.fileType, input.mimeType, detected.hints),
     };
@@ -203,125 +170,16 @@ export class FileTypeDetectionService {
 
   async resolveStrategy(input: FileDetectionInput): Promise<ExtractionStrategyResolution> {
     const detection = await this.detect(input);
-    const defaultMode = resolveDefaultExecutionMode(detection.fileType);
-
-    if (detection.fileType === 'pdf') {
-      const density = await inspectPdfTextDensity(input.buffer);
-      const textCoverageRatio =
-        density.totalPages > 0 ? density.pagesWithText / density.totalPages : 0;
-      const sparsePageRatio =
-        density.totalPages > 0 ? density.sparseTextPages / density.totalPages : 0;
-
-      if (density.totalCharacters === 0 || textCoverageRatio < 0.35) {
-        return {
-          strategyId: 'pdf_ocr_primary',
-          executionMode: 'ocr',
-          reason: 'PDF appears scanned or image-first, so OCR should lead extraction.',
-          detection: {
-            ...detection,
-            hints: [
-              ...detection.hints,
-              `pdf-pages:${density.totalPages}`,
-              `pdf-pages-with-text:${density.pagesWithText}`,
-              `pdf-sparse-pages:${density.sparseTextPages}`,
-            ],
-          },
-          nativePreferred: false,
-          ocrPreferred: true,
-          hybridPreferred: false,
-          shouldUseDoclingNormalization: true,
-        };
-      }
-
-      if (textCoverageRatio < 0.85 || density.averageCharactersPerPage < 180 || sparsePageRatio > 0) {
-        return {
-          strategyId: 'pdf_hybrid_merge',
-          executionMode: 'hybrid',
-          reason: 'PDF has partial or sparse native text coverage, so native extraction with OCR fallback is safer.',
-          detection: {
-            ...detection,
-            hints: [
-              ...detection.hints,
-              `pdf-pages:${density.totalPages}`,
-              `pdf-pages-with-text:${density.pagesWithText}`,
-              `pdf-sparse-pages:${density.sparseTextPages}`,
-            ],
-          },
-          nativePreferred: true,
-          ocrPreferred: true,
-          hybridPreferred: true,
-          shouldUseDoclingNormalization: true,
-        };
-      }
-
-      return {
-        strategyId: 'pdf_native_structured',
-        executionMode: 'native',
-        reason: 'PDF has strong embedded text, so native extraction should lead.',
-        detection: {
-          ...detection,
-          hints: [
-            ...detection.hints,
-            `pdf-pages:${density.totalPages}`,
-            `pdf-pages-with-text:${density.pagesWithText}`,
-            `pdf-sparse-pages:${density.sparseTextPages}`,
-          ],
-        },
-        nativePreferred: true,
-        ocrPreferred: false,
-        hybridPreferred: false,
-        shouldUseDoclingNormalization: true,
-      };
-    }
-
-    if (detection.fileType === 'image') {
-      return {
-        strategyId: 'image_ocr_primary',
-        executionMode: 'ocr',
-        reason: 'Images require OCR/document-vision extraction.',
-        detection,
-        nativePreferred: false,
-        ocrPreferred: true,
-        hybridPreferred: false,
-        shouldUseDoclingNormalization: true,
-      };
-    }
-
-    if (detection.fileType === 'docx') {
-      return {
-        strategyId: 'docx_structured_native',
-        executionMode: 'native',
-        reason: 'DOCX supports structural native extraction.',
-        detection,
-        nativePreferred: true,
-        ocrPreferred: false,
-        hybridPreferred: false,
-        shouldUseDoclingNormalization: true,
-      };
-    }
-
-    if (['xlsx', 'xls', 'csv'].includes(detection.fileType)) {
-      return {
-        strategyId: 'spreadsheet_native',
-        executionMode: 'native',
-        reason: 'Spreadsheet formats should stay sheet-aware and native-first.',
-        detection,
-        nativePreferred: true,
-        ocrPreferred: false,
-        hybridPreferred: false,
-        shouldUseDoclingNormalization: false,
-      };
-    }
 
     return {
-      strategyId: `${detection.fileType || 'unknown'}_${defaultMode}`,
-      executionMode: defaultMode,
-      reason: 'Fallback strategy selected from the detected file type.',
+      strategyId: buildStrategyId(detection.fileType),
+      executionMode: 'marker',
+      reason: 'Datalab Convert is the canonical backend extraction engine for document intake.',
       detection,
-      nativePreferred: defaultMode === 'native',
-      ocrPreferred: defaultMode === 'ocr',
-      hybridPreferred: defaultMode === 'hybrid',
-      shouldUseDoclingNormalization: detection.fileType !== 'unknown',
+      nativePreferred: false,
+      ocrPreferred: detection.isImage,
+      hybridPreferred: false,
+      shouldUseDoclingNormalization: false,
     };
   }
 }

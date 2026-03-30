@@ -1,0 +1,168 @@
+Spawn multiple subagents to explore this repo in parallel.
+
+Use separate subagents for:
+1. architecture and file-ownership tracing
+2. frontend/UI and route inventory tracing
+3. backend/API/runtime/service tracing
+4. auth/session/environment/deployment tracing
+5. documentation/ledger consolidation verification
+
+Then consolidate findings before making changes.
+
+Analyze the current codebase first before making any changes.
+
+Important:
+This is an existing production-style project. Do not rebuild from scratch. Do not redesign the architecture unless explicitly requested. Do not change unrelated runtime logic. This task is specifically about updating and enriching the project ledger as the authoritative long-form project memory and structural description.
+
+Mandatory documentation rule:
+Read `ZOOTOPIA_PROJECT_LEDGER.txt` first, in full, before making any edits.
+Treat it as the primary historical memory of the project.
+Do not overwrite history.
+Do not delete real information.
+Do not remove valid older entries.
+Do not flatten or destroy chronological change history.
+
+Task type:
+Hybrid / architecture-sensitive documentation maintenance
+
+Goal:
+Update `ZOOTOPIA_PROJECT_LEDGER.txt` so it becomes a deeply accurate, current, professional, and comprehensive description of the entire project at the end of the current development day.
+
+Core intent:
+This file is the master project memory and should describe:
+- project identity
+- project purpose
+- high-level architecture
+- frontend/backend ownership
+- runtime/deployment paths
+- auth/session flow
+- document/runtime flow
+- AI/model/provider flow
+- admin/billing/communication systems
+- important feature areas
+- key routes and ownership
+- sensitive files and high-risk areas
+- dependency/runtime baselines
+- environment/deployment structure
+- current goals and architecture direction
+- important compatibility rules
+- all meaningful changes completed so far
+
+Critical preservation rules:
+- Do not delete any true historical information
+- Do not erase older valid entries
+- Do not rewrite the ledger from scratch unless the file is clearly corrupted and unrecoverable
+- Do not collapse the change history into a short summary
+- Do not remove prior dated entries
+- Preserve all real historical knowledge unless it is clearly false and contradicted by the current verified codebase
+- If an older note is outdated, preserve it historically but clarify the newer verified state above or beside it
+- Append and refine professionally; do not destroy project memory
+
+Required work:
+1. Re-read and verify the current live codebase against the existing ledger.
+2. Expand and update the ledger so it accurately reflects the current project state.
+3. Ensure the ledger includes all major project dimensions, including:
+   - identity and purpose
+   - current architecture style
+   - verified runtime/deployment model
+   - frontend/backend separation
+   - key ownership boundaries
+   - feature/tool inventory
+   - key files and sensitive files
+   - auth/session architecture
+   - document runtime/extraction/storage flow
+   - AI/model/provider orchestration
+   - admin/governance/billing/communication systems
+   - environment/config/deployment files
+   - supported deployment targets
+   - guidance for future agents/developers
+4. Update the “current verified snapshot” style content where needed.
+5. Append a new dated end-of-day change entry for the current day’s work.
+6. Keep the ledger structured, professional, future-developer-friendly, and historically safe.
+
+Mandatory environment-specific requirement:
+When updating the ledger, explicitly preserve or clarify the separation between:
+1. Local integrated development
+2. Firebase Hosting + Cloud Run
+3. Netlify frontend + Cloud Run backend
+4. Any other active backend-capable deployment path already present in the repo
+
+For each relevant runtime path, make sure the ledger clearly reflects:
+- what part is frontend
+- what part is backend
+- what path/API routing behavior is used
+- what auth/session behavior applies
+- what env/deployment assumptions matter
+- what is same-origin vs cross-origin
+- what is path-specific vs shared
+
+Required audit scope:
+Inspect and reconcile the ledger against at minimum:
+- `package.json`
+- `package-lock.json`
+- `server.ts`
+- `server/*`
+- `src/App.tsx`
+- `src/auth/*`
+- `src/ai/*`
+- `src/features/*`
+- `src/components/*` where needed for shared shell/runtime understanding
+- `src/services/*` where needed for backend/frontend contract understanding
+- `src/routing/*`
+- `.env.example`
+- `.env`
+- `cloudrun.env`
+- `firebase.json`
+- `netlify.toml`
+- `Dockerfile`
+- `cloudbuild.yaml`
+- `deployment/runtime-manifest.json`
+- `firestore.rules`
+- `storage.rules`
+- `tests/*` only for inventory/isolation awareness, not to mix them into production ownership
+
+Ledger quality requirements:
+- Keep it long-form and rich, not shallow
+- Keep it technically accurate
+- Keep it organized by sections
+- Keep both high-level explanation and precise file references
+- Keep it useful for future AI agents and human developers
+- Preserve chronology
+- Add missing sections if they are clearly needed
+- Clarify outdated areas without deleting historical truth
+- Note important risks, sensitive files, and architecture boundaries
+- Preserve and improve readability
+
+Do not:
+- do not delete genuine historical entries
+- do not summarize the entire project into a tiny note
+- do not remove file references if they are still meaningful
+- do not invent architecture or features that do not exist
+- do not change code just to make the ledger easier
+- do not mix test-only code into production architecture descriptions
+- do not expose secrets from `.env`, `cloudrun.env`, or private key files
+- do not write fake verification claims
+
+Verification requirements:
+After updating the ledger:
+1. Confirm which sections were refreshed
+2. Confirm which new architectural facts were added
+3. Confirm which older sections were preserved
+4. Clearly identify whether any older notes were kept as historical but superseded by newer verified state
+5. Run full-project lint if this task touched any code or structured files beyond the ledger
+6. If only the ledger was edited, state that runtime code was left untouched
+
+Output requirements:
+After the work, report clearly:
+1. whether the ledger was expanded, corrected, or both
+2. which sections were updated
+3. whether historical entries were preserved
+4. what new verified project facts were added
+5. what was intentionally left untouched
+6. whether only the ledger changed or other files too
+7. whether any unresolved ambiguity remains in the project description
+
+Final instruction:
+Treat `ZOOTOPIA_PROJECT_LEDGER.txt` as the authoritative encyclopedia of the project.
+The goal is not just to append one short log entry.
+The goal is to keep it continuously updated so it describes the full project truth, structure, goals, major systems, and development history without losing any real information.

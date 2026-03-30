@@ -10,6 +10,19 @@ export interface AIProviderResponse {
   usage?: any;
 }
 
+const createServerManagedGeminiClient = (apiKey: string) => {
+  /**
+   * Keep server-managed Gemini execution pinned to the Gemini Developer API.
+   * Cloud Run and other Google-hosted runtimes can expose ambient Google Cloud
+   * credentials, but this route is intentionally keyed by `GEMINI_API_KEY`
+   * rather than implicit OAuth/Vertex resolution.
+   */
+  return new GoogleGenAI({
+    apiKey,
+    vertexai: false,
+  });
+};
+
 const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> => {
   return new Promise<T>((resolve, reject) => {
     const timeoutId = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
@@ -89,7 +102,7 @@ export class GeminiProvider {
         },
       });
 
-      const ai = new GoogleGenAI({ apiKey: runtime.apiKey });
+      const ai = createServerManagedGeminiClient(runtime.apiKey);
       const response = await withTimeout(
         ai.models.generateContent({
           model: modelId,

@@ -16,6 +16,7 @@ export const FACULTY_FAST_ACCESS_ALLOWED_TOOL_IDS = [
 ] as const;
 
 export const FACULTY_FAST_ACCESS_ALLOWED_ROUTE_IDS = [
+  'home',
   'generate',
   'analysis',
   'infographic',
@@ -24,13 +25,13 @@ export const FACULTY_FAST_ACCESS_ALLOWED_ROUTE_IDS = [
 
 export const FACULTY_FAST_ACCESS_ALLOWED_PATHS = [
   '/',
-  // `/generate` is an explicit alias for the same Assessment entry surface as
-  // `/`. Keep both paths aligned so routing fixes do not accidentally broaden
-  // or break temporary fast-access access.
+  '/home',
+  // `/generate` is the next-step Assessment workspace that consumes the same
+  // shared document family as the standalone upload home on `/home`.
   '/generate',
   // `/analysis` is the dedicated full-page view of the same shared document
-  // workflow. Keep it aligned with `/generate` rather than treating it as a
-  // separate broader entitlement surface.
+  // workflow. Keep it aligned with the upload/generator family rather than
+  // treating it as a separate broader entitlement surface.
   '/analysis',
   '/infographic',
   '/account',

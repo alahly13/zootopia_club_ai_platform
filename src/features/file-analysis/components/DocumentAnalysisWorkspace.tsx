@@ -105,16 +105,20 @@ const DocumentAnalysisWorkspace: React.FC<DocumentAnalysisWorkspaceProps> = ({
         <p className="mt-2 text-sm leading-relaxed text-zinc-500 dark:text-zinc-400">
           {t('uploadUI.analysisWorkspaceClosedHint', {
             defaultValue:
-              'Upload a document from the assessment workspace, then open analysis here whenever you want a full-page view.',
+              'Upload a document from the standalone upload home, then open analysis here whenever you want a full-page view.',
           })}
         </p>
         <button
           type="button"
-          onClick={() => navigate('/generate')}
+          onClick={() => navigate('/home')}
           className="mt-5 inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-4 py-3 text-[11px] font-black uppercase tracking-[0.18em] text-white shadow-lg shadow-emerald-500/20 transition-all hover:bg-emerald-500"
         >
           <ArrowLeft size={16} />
-          <span>{t('generateQuiz')}</span>
+          <span>
+            {t('uploadUI.openUploadHomeAction', {
+              defaultValue: 'Open upload home',
+            })}
+          </span>
         </button>
       </div>
     );
@@ -147,7 +151,7 @@ const DocumentAnalysisWorkspace: React.FC<DocumentAnalysisWorkspaceProps> = ({
                   {isPage
                     ? t('uploadUI.fullAnalysisHint', {
                         defaultValue:
-                          'Use the full page to inspect the document, run analysis manually, and export the result without crowding the assessment workspace.',
+                          'Use the full page to inspect the document, run analysis manually, and export the result without crowding the separate assessment workspace.',
                       })
                     : t('uploadUI.analysisWorkspaceHint', {
                         defaultValue:

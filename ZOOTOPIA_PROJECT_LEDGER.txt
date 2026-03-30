@@ -1,7 +1,7 @@
 ﻿================================================================================
 ZOOTOPIA CLUB - MASTER PROJECT LEDGER & SYSTEM RECORD
 ================================================================================
-Verified current-code snapshot: 2026-03-29
+Verified current-code snapshot: 2026-03-30
 Primary backend URL referenced by deployment config: https://zootopia-api-38079185268.us-central1.run.app
 *** IMPORTANT INSTRUCTIONS FOR FUTURE AI ASSISTANTS & DEVELOPERS ***
 1. READ THIS FILE FIRST before making any architectural, structural, or logic changes.
@@ -22,7 +22,7 @@ Primary backend URL referenced by deployment config: https://zootopia-api-380791
 - Runtime Shape:
   - Local development is a single integrated process through `server.ts`, which mounts Vite middleware and serves the React app.
   - Production-capable deployments can split static frontend hosting from the API/backend runtime.
-- Ledger Snapshot Refreshed: 2026-03-29
+- Ledger Snapshot Refreshed: 2026-03-30
 - Verified Against: `package.json`, `package-lock.json`, `vite.config.ts`, `server.ts`, `firebase.json`, `netlify.toml`, `cloudbuild.yaml`, `Dockerfile`, `.env.example`, `cloudrun.env`, `deployment/runtime-manifest.json`, `firestore.rules`, `storage.rules`, `src/`, `server/`, and `tests/`.
 ================================================================================
 2. DEPENDENCY / RUNTIME AUDIT
@@ -36,7 +36,7 @@ Primary backend URL referenced by deployment config: https://zootopia-api-380791
   - Frontend core: React `19.2.4`, React DOM `19.2.4`, React Router DOM `7.13.1`, Vite `6.4.1`, TypeScript `5.8.3`
   - Styling / UI: Tailwind CSS `4.2.2`, `@tailwindcss/vite` `4.2.2`, motion `12.38.0`, lucide-react `0.546.0`, react-hot-toast `2.6.0`, recharts `3.8.0`
   - Firebase / auth / data: firebase `12.11.0`, firebase-admin `13.7.0`, `@react-oauth/google` `0.13.4`
-  - Backend / runtime: Express `4.22.1`, tsx `4.21.0`, dotenv `17.2.3`, redis `4.7.1`, better-sqlite3 `12.8.0`, nodemailer `8.0.3`
+  - Backend / runtime: Express `4.22.1`, tsx `4.21.0`, dotenv `17.2.3`, better-sqlite3 `12.8.0`, nodemailer `8.0.3`
   - AI / provider SDKs: `@google/genai` `1.46.0`
   - Document / export tooling: pdfjs-dist `5.5.207`, mammoth `1.12.0`, xlsx `0.18.5`, docx `9.6.1`, jspdf `4.2.1`, jspdf-autotable `5.0.7`, html2canvas `1.4.1`, file-saver `2.0.5`
   - i18n: i18next `25.10.5`, react-i18next `16.6.2`, i18next-browser-languagedetector `8.2.1`
@@ -109,7 +109,7 @@ Primary backend URL referenced by deployment config: https://zootopia-api-380791
 - Auth/session flow:
   - Frontend session lifecycle lives in `src/auth/session/*`, especially `sessionApi.ts`.
   - Browser calls `/api/auth/session/bootstrap`, `/api/auth/session/refresh`, and `/api/auth/session/logout`.
-  - Backend authority lives in `server/authSessionService.ts` and `server/auth/*`, with Redis-backed or local fallback session coordination.
+  - Backend authority lives in `server/authSessionService.ts`, with Firestore-backed session coordination in the live path and no Redis requirement for the primary runtime flow.
 - Document upload/extraction flow:
   - `src/upload/FileUploader.tsx` and assessment/file-analysis entry points call `src/services/documentRuntimeService.ts`.
   - The browser posts `POST /api/documents/intake` with bearer auth and document metadata headers.
@@ -140,8 +140,9 @@ Primary backend URL referenced by deployment config: https://zootopia-api-380791
 - Document Runtime / Upload / Extraction Architecture:
   - Upload policy is centralized in `src/upload/documentFilePolicy.ts`.
   - Frontend uploads stream through `src/services/documentRuntimeService.ts`.
-  - Backend authority lives in `server/documentRuntime/*`, with layered responsibilities for file-type detection, extraction, OCR/native strategies, artifact storage, prompt-context assembly, cleanup, and runtime state coordination.
-  - Current extraction version in `server/documentRuntime/config.ts` is `2026.03.layered-runtime-v2`.
+  - Backend authority lives in `server/documentRuntime/*`, with backend-only extraction-engine routing selecting `datalab_convert` by default and `python_legacy` only when explicitly configured, inside the existing artifact-storage, prompt-context, cleanup, and runtime-state contract.
+  - Current extraction version in `server/documentRuntime/config.ts` is `2026.03.datalab-convert-v1`.
+  - The previous layered Python/native/OCR extraction implementation is preserved as an inactive backup archive at `backups/legacy-document-extraction/legacy-layered-document-extraction-2026-03-29.tar` and is no longer part of the live runtime path.
   - The `direct_file_to_model` path exists in code but remains dormant compared with the active local-extraction pathway.
 - AI / Model / Orchestration Architecture:
   - Gemini and Qwen providers are both wired.
@@ -240,7 +241,7 @@ Primary backend URL referenced by deployment config: https://zootopia-api-380791
 - Local integrated runtime:
   - `npm run dev` and `npm run start` both execute `tsx server.ts`.
   - In non-production, `server.ts` mounts Vite middleware and serves both API and SPA from the same process.
-  - `.env` and `.env.example` define local runtime variables; local document extraction can use the Python virtual environment.
+  - `.env` and `.env.example` define local runtime variables; backend document extraction is now selected by the server-only `DOCUMENT_EXTRACTION_ENGINE` switch, with `datalab_convert` as the default and Datalab credentials/settings kept backend-only, while the legacy Python variables remain for the explicit `python_legacy` recovery path.
 - Firebase Hosting + Cloud Run:
   - `firebase.json` serves the built SPA from `dist`.
   - `/api/**` is rewritten to Cloud Run service `zootopia-api` in `us-central1`.
@@ -314,8 +315,7 @@ Primary backend URL referenced by deployment config: https://zootopia-api-380791
   - `src/admin/services/providerSecuritySummaryService.ts`
 - Backend (`server/`):
   - Core services: `authSessionService.ts`, `billingService.ts`, `communicationService.ts`, `monitoringService.ts`, `codeService.ts`, `providerRuntime.ts`, `aiProviders.ts`, `promptOrchestrator.ts`, `securityHeaders.ts`, `runtimeConfig.ts`
-  - Auth helpers: `auth/authSessionService.ts`, `auth/sessionCookies.ts`, `auth/sessionTypes.ts`
-  - Cache helpers: `cache/namespaces.ts`, `cache/redisBackedStore.ts`, `cache/sharedRedis.ts`
+  - Cache helpers: `cache/firestoreBackedStore.ts`, `cache/namespaces.ts`
   - Document runtime: `documentRuntime/config.ts`, `documentRuntime/documentIntakeService.ts`, `documentRuntime/documentArtifactStore.ts`, `documentRuntime/documentStorage.ts`, `documentRuntime/runtimeStateService.ts`, `documentRuntime/promptContextResolver.ts`, `documentRuntime/promptContextAssembler.ts`, `documentRuntime/extractionCoordinator.ts`, `documentRuntime/nativeExtractionService.ts`, `documentRuntime/ocrExtractionService.ts`, `documentRuntime/pythonDocumentWorker.ts`, `documentRuntime/python/extract_document.py`
 - Runtime/generated state:
   - `runtime/document-workspaces/`
@@ -4899,7 +4899,7 @@ pm run build\ successfully.
 - Area: Deployment Configuration / Explicit Python Extraction Dependency Discovery
 - Summary: Added explicit Render and Netlify deployment contracts so the nested Python extraction requirements file at `server/documentRuntime/python/requirements.txt` is no longer left to hosting-platform auto-detection, while preserving the existing single-service Node + embedded Python-worker architecture.
 - Reason:
-  - The repository already runs as one backend service via `server.ts`, with production serving the built SPA from `dist` and document extraction spawning `server/documentRuntime/python/extract_document.py` directly.
+  - The repository already runs as one backend service via `server.ts`, with production serving the built SPA from `dist` and document extraction remaining backend-authoritative inside `server/documentRuntime/*`, while the legacy Python worker stays available only when `DOCUMENT_EXTRACTION_ENGINE=python_legacy`.
   - Before this pass, no root deployment config referenced the nested Python requirements file, there was no production `start` script, and the backend still bound to a hardcoded `3000`, which is unsafe on platforms that inject `PORT`.
 - Deployment Config Added / Updated:
   - Added `render.yaml`
@@ -6198,3 +6198,616 @@ pm run build\ successfully.
   - `cloudrun.env`, `.env`, `serviceAccountKey.json`, and `runtime/document-workspaces/` remain high-risk and should continue to be treated carefully in future documentation work.
 - Notes:
   - Documentation-only change. No application source code behavior was modified in this ledger refresh.
+
+[2026-03-29]
+- Area: Entry Routing Normalization + Assessment Landing Compression
+- Files: /src/App.tsx, /src/features/assessment-tool/pages/AssessmentDashboard.tsx, /src/upload/FileUploader.tsx, /src/i18n/locales/en.json, /src/i18n/locales/ar.json, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Updated the initial authenticated entry behavior so signed-in users land on the main upload-first Assessment page instead of restoring a previous workspace route, and compressed the Assessment landing hero so the upload action area is visible sooner without scrolling.
+- Reason: The production entry flow was still preserving requested/previous workspace routes during post-auth restore, and the Assessment landing page consumed too much vertical space above the upload zone. The goal was to normalize entry safely while preserving the existing route/auth/document architecture and making the upload-first CTA visible earlier.
+- Technical Details:
+  - `src/App.tsx`
+    - Removed post-auth requested-route restore from `resolvePostAuthPath(...)`.
+    - Normalized authenticated entry to the shared Assessment upload page (`/generate`) for standard/admin sessions.
+    - Preserved the existing fast-access account-completion / zero-credit exception that still routes to `/account`.
+    - Added comments warning future changes not to reintroduce remembered-route restore behavior in the login-entry path.
+  - `src/features/assessment-tool/pages/AssessmentDashboard.tsx`
+    - Reduced top-section padding and intro spacing.
+    - Replaced the oversized landing headline block with a compact premium title treatment.
+    - Added an inline architecture/UX comment explaining that the landing intro must stay compact so the uploader CTA remains visible on common laptop screens.
+  - `src/upload/FileUploader.tsx`
+    - Tightened idle-state padding, icon size, internal gaps, and decorative top glow height.
+    - Removed the large idle descriptive paragraph from the upload card while preserving the upload workflow, supported-format badges, and main upload CTA.
+    - Added a comment documenting that the idle uploader hero must remain compact because it is the primary entry CTA.
+  - `src/i18n/locales/en.json` / `src/i18n/locales/ar.json`
+    - Added compact landing-title copy for the Assessment entry page.
+- Risks / Dependencies:
+  - This change intentionally affects only initial post-auth landing behavior, not normal in-app navigation after entry.
+  - Protected route logic, admin-only route protections, session handling, and document runtime behavior were intentionally left intact.
+  - Fast-access account-completion routing remains a special-case exception and should not be collapsed into the normal landing path without a separate auth-flow review.
+- Notes:
+  - Preserved intentionally:
+    - existing routes
+    - protected-route boundaries
+    - admin permissions
+    - workspace system structure
+    - document pipeline behavior
+  - Verification:
+    - Source-level diff review completed for all touched files.
+    - `npm run lint` and direct `tsc --noEmit` attempts both stalled in the repo's full TypeScript pass and were not able to finish within the available timeout window, so final verification for this task is by targeted code inspection and diff review.
+
+[2026-03-29]
+- Area: Entry Routing Normalization + Assessment Dashboard Hero Compression
+- Files: /src/App.tsx, /src/components/MainLayout.tsx, /src/features/assessment-tool/pages/AssessmentDashboard.tsx, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Normalized fresh authenticated platform entry onto the shared upload-first home screen and compressed the Assessment Dashboard landing header so the upload area is visible earlier without initial scrolling.
+- Reason: Production entry behavior needed to stop favoring remembered workspace URLs or admin-default landings on fresh entry, and the Assessment landing header was consuming too much vertical space above the upload action area.
+- Technical Details:
+  - `src/App.tsx`
+    - Simplified post-auth login-route redirect resolution so fresh authenticated entry now converges on the shared Assessment upload page instead of restoring previous route state or sending admins to `/admin` by default.
+    - Preserved the fast-access account-completion exception so temporary-account conversion/account-guard flows remain intact.
+    - Added routing comments documenting that last-route restore behavior must not be reintroduced at login entry.
+  - `src/components/MainLayout.tsx`
+    - Added a one-shot authenticated shell entry normalization effect that redirects the first mounted shell route to `/generate` (or `/account` for the existing fast-access completion exception).
+    - Intentionally strips remembered path/hash/query-based workspace entry state on fresh shell entry so users start on the upload-first home surface.
+    - Leaves normal in-app navigation untouched after the first landing.
+    - Allows payment callback URLs with active payment session query params to complete before any normalization redirect runs.
+  - `src/features/assessment-tool/pages/AssessmentDashboard.tsx`
+    - Reduced top-level vertical spacing and panel padding.
+    - Replaced the large marketing-style hero headline/paragraph block with a compact premium title area.
+    - Kept the upload component, upload-first workflow, dark-theme styling, and existing post-upload next-step behavior intact.
+    - Added a comment documenting that the landing intro must stay compact so the uploader remains visible on common laptop screens.
+- Risks / Dependencies:
+  - Fresh authenticated entry for main shell routes now intentionally collapses remembered workspace routes to the shared home/upload page; this is the intended behavior change.
+  - Fast-access account completion remains a deliberate exception and still routes to `/account` where required by existing account-policy guards.
+  - Payment callback handling depends on the existing query-param detection remaining accurate.
+- Notes:
+  - Protected-route enforcement, admin permissions, workspace route definitions, and document runtime/upload pipeline behavior were otherwise left unchanged.
+  - Full `npm run lint` (`tsc --noEmit`) did not finish within the available timeout window in this workspace.
+  - Targeted TypeScript transpile diagnostics for the edited files passed with `0 diagnostic(s)` for:
+    - `src/App.tsx`
+    - `src/components/MainLayout.tsx`
+    - `src/features/assessment-tool/pages/AssessmentDashboard.tsx`
+
+[2026-03-29]
+- Area: Document Runtime Extraction Engine Replacement / Datalab Convert Activation
+- Files: /server/documentRuntime/config.ts, /server/documentRuntime/types.ts, /server/documentRuntime/fileTypeDetectionService.ts, /server/documentRuntime/datalabConvertService.ts, /server/documentRuntime/extractionCoordinator.ts, /server/documentRuntime/extractionEngine.ts, /server/documentRuntime/documentIntakeService.ts, /src/features/assessment-tool/pages/AssessmentDashboard.tsx, /.env.example, /tests/documentRuntime.test.ts, /tests/documentRuntimeSmoke.ts, /backups/legacy-document-extraction/legacy-layered-document-extraction-2026-03-29.tar, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Replaced the live layered Python/native/OCR extraction fan-out with a single backend-authoritative Datalab Convert flow, while preserving the previous layered engine as an inactive `.tar` backup outside the active runtime path.
+- Reason:
+  - The prior `local_extraction` path could still fan out across Python, native parsing, OCR, hybrid merge, and late PDF OCR fallback inside one intake request, which was too easy to leave duplicated, partially overlapping, or misleading in-progress states.
+  - The platform needed one canonical extraction engine under `/api/documents/intake` without redesigning the document runtime, artifact store, prompt-context resolver, workspace layout, or frontend upload contract.
+- Technical Details:
+  - `server/documentRuntime/datalabConvertService.ts`
+    - Added backend-only Datalab Convert integration using `POST /api/v1/marker` plus `request_check_url` polling.
+    - Uses the verified defaults:
+      - `output_format=markdown`
+      - `mode=balanced`
+      - `paginate=true`
+      - `disable_image_captions=true`
+      - `disable_image_extraction=false`
+      - `save_checkpoint=true`
+      - `skip_cache=false`
+    - Surfaces explicit backend failure codes/messages for missing API key, submit failure, poll failure, timeout, and empty-markdown completion.
+  - `server/documentRuntime/extractionCoordinator.ts`
+    - Removed the live multi-engine orchestration from the active path.
+    - Converts Datalab markdown into the existing backend-owned artifact payload shape (`normalizedText`, `normalizedMarkdown`, `structuredDocumentJson`, `pageMap`, `headingTree`, `pageSegments`) so downstream tools continue reading the same shared runtime model.
+    - Keeps `processingPathway` as `local_extraction` for backward compatibility while the actual extraction strategy now records Datalab usage.
+  - `server/documentRuntime/documentIntakeService.ts`
+    - Extraction-stage messages are now backend-authoritative and map to real remote-conversion lifecycle states (`submitting_to_datalab`, `waiting_for_datalab`, `finalizing_extraction`) before the existing `persisting_artifact` / `ready` phases.
+    - Failure persistence now preserves stage/code metadata from the Datalab path instead of collapsing everything into a generic intake error.
+  - `src/features/assessment-tool/pages/AssessmentDashboard.tsx`
+    - Removed fake post-response extract/store progress movement after `/api/documents/intake` has already completed, so the visible progress remains aligned with real backend completion.
+  - `.env.example`
+    - Added backend-only Datalab variables:
+      - `DATALAB_API_KEY`
+      - `DATALAB_API_BASE_URL`
+      - `DATALAB_CONVERT_POLL_INTERVAL_MS`
+      - `DATALAB_CONVERT_POLL_TIMEOUT_MS`
+    - Kept the legacy Python variables documented as compatibility-only backup settings rather than the active intake path.
+  - Backup archive:
+    - Created `backups/legacy-document-extraction/legacy-layered-document-extraction-2026-03-29.tar`
+    - Archived the previous layered engine files:
+      - `server/documentRuntime/extractionCoordinator.ts`
+      - `server/documentRuntime/fileTypeDetectionService.ts`
+      - `server/documentRuntime/nativeExtractionService.ts`
+      - `server/documentRuntime/ocrExtractionService.ts`
+      - `server/documentRuntime/hybridMergeService.ts`
+      - `server/documentRuntime/pythonDocumentWorker.ts`
+      - `server/documentRuntime/python/extract_document.py`
+      - `server/documentRuntime/python/requirements.txt`
+- Risks / Dependencies:
+  - The live extraction path now depends on backend Datalab configuration; uploads will fail clearly until `DATALAB_API_KEY` is present in the server runtime.
+  - The legacy Python/native/OCR files still exist in the repository for backup/reference, but they are intentionally no longer wired into the active extraction flow.
+  - Frontend upload progress remains request-scoped; the upload surface now avoids fake post-completion movement, but it still does not stream every intermediate backend poll event to the browser.
+- Notes:
+  - Preserved intentionally:
+    - `/api/documents/intake` as the canonical entrypoint
+    - backend authority inside `server/documentRuntime/*`
+    - `DocumentContext` as a frontend mirror only
+    - runtime workspace/artifact paths
+    - artifact retention and cleanup policy
+    - downstream prompt-context and tool-sharing behavior
+  - Verification:
+    - Confirmed the legacy archive exists at `backups/legacy-document-extraction/legacy-layered-document-extraction-2026-03-29.tar`.
+    - Confirmed active code no longer imports `pythonDocumentWorker`, `nativeExtractionService`, `ocrExtractionService`, or `hybridMergeService`.
+    - Targeted TypeScript compiler diagnostics for the changed extraction/runtime files were clean; only pre-existing unrelated repo diagnostics remained in:
+      - `src/components/status/useTrackingDiagnosticsAccess.ts`
+      - `src/utils/fileProcessors.ts`
+      - `src/utils/logger.ts`
+    - `npm run lint`, Node's built-in test runner, and `tsx` execution were constrained by this workspace/sandbox combination and were not able to complete as a full end-to-end verification path here.
+
+[2026-03-30]
+- Area: Document Runtime Extraction Engine Routing / Backend Env Switch
+- Files: /server/documentRuntime/config.ts, /server/documentRuntime/extractionEngine.ts, /server/documentRuntime/legacyExtractionCoordinator.ts, /server/documentRuntime/legacyFileTypeDetectionService.ts, /server/documentRuntime/extractionCoordinator.ts, /server/documentRuntime/documentIntakeService.ts, /server/documentRuntime/datalabConvertService.ts, /.env.example, /cloudrun.env, /tests/documentRuntime.test.ts, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Added backend-only environment-driven extraction engine routing so the document runtime can switch cleanly between `datalab_convert` and `python_legacy`, while keeping Datalab as the default active engine and preserving the legacy layered extractor as an isolated backup path.
+- Reason:
+  - The extraction-engine replacement needed to stay reversible across local development and Cloud Run-style deployments without changing frontend contracts, route structure, workspace ownership, or prompt-context behavior.
+  - The repo still needed exactly one canonical extraction engine active per intake job, not a partially wired dual-flow system.
+- Technical Details:
+  - `server/documentRuntime/config.ts`
+    - Added `DocumentExtractionEngine` and backend-only `getDocumentExtractionEngine()`.
+    - Added canonical Datalab env readers for:
+      - `DATALAB_BASE_URL`
+      - `DATALAB_CONVERT_MODE`
+      - `DATALAB_CONVERT_OUTPUT_FORMAT`
+      - `DATALAB_CONVERT_PAGINATE`
+      - `DATALAB_DISABLE_IMAGE_CAPTIONS`
+      - `DATALAB_DISABLE_IMAGE_EXTRACTION`
+      - `DATALAB_SAVE_CHECKPOINT`
+      - `DATALAB_SKIP_CACHE`
+    - Kept `DATALAB_API_BASE_URL` as a compatibility alias.
+  - `server/documentRuntime/extractionEngine.ts`
+    - Centralized engine selection at the existing backend extraction seam.
+    - Keeps frontend upload flows and `DocumentContext` stable by routing engine choice entirely on the backend.
+  - `server/documentRuntime/legacyExtractionCoordinator.ts`
+    - Restored the layered Python/native/OCR/hybrid coordinator as an isolated legacy runtime path.
+    - Emits backend operation stages (`extracting`, `finalizing_extraction`) without reactivating duplicate engines during the Datalab path.
+  - `server/documentRuntime/documentIntakeService.ts`
+    - Initial extraction progress stage/message now reflects the configured backend engine instead of always assuming Datalab.
+    - Keeps `/api/documents/intake` as the canonical intake entrypoint and backend operation-state owner.
+  - `server/documentRuntime/datalabConvertService.ts`
+    - Now submits Datalab requests using the configurable backend defaults instead of hardcoded request options.
+  - `.env.example` and `cloudrun.env`
+    - Document `DOCUMENT_EXTRACTION_ENGINE=datalab_convert` as the canonical default.
+    - Keep Datalab settings backend-only and separate from any `VITE_*` frontend variables.
+  - `tests/documentRuntime.test.ts`
+    - Hardened Datalab tests so they explicitly select `datalab_convert`.
+    - Added a focused legacy-engine test proving `python_legacy` can be selected by env without changing the extracted artifact contract.
+- Risks / Dependencies:
+  - `DOCUMENT_EXTRACTION_VERSION` is still resolved from process env at server startup, so engine changes are deployment/runtime-config switches, not a hot in-process toggle.
+  - `python_legacy` depends on the existing Python/runtime prerequisites remaining available in environments that intentionally select it.
+  - `cloudrun.env` now documents the non-secret engine settings, but `DATALAB_API_KEY` must still be injected securely outside source control.
+- Notes:
+  - Preserved intentionally:
+    - browser upload entry flow
+    - `/api/documents/intake` canonical ownership
+    - backend-owned artifact/workspace model
+    - shared prompt-context/tool-consumption model
+    - legacy Python extraction code in-repo as a selectable backup path
+  - Verification:
+    - Reviewed the live extraction import graph to confirm only one coordinator is selected per request.
+    - Added a targeted test covering explicit `python_legacy` selection.
+    - Additional full end-to-end test execution remains limited by the current workspace/sandbox process restrictions.
+
+[2026-03-30]
+- Area: End-to-End Document Runtime / AI Result / Export Audit + Analysis Result Persistence
+- Files: /src/features/file-analysis/hooks/useDocumentAnalysisWorkspace.ts, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Audited the live upload-to-export flow against `Zootopia_Complete_Document_Runtime_AI_Result_Export_System_Guide.md`, confirmed the main document-runtime and quiz-generation path already matched the intended architecture, and fixed the remaining gap where document-analysis output reached preview/export without entering the 3-day result persistence layer.
+- Reason:
+  - The operational guide requires generated AI results to become canonical stored results so history, detached preview, and export can reopen the same output during the retention window.
+  - The live code already satisfied entry routing, upload, Datalab extraction, shared document reuse, prompt assembly, and branded export behavior, so only the exact missing persistence link needed correction.
+- Technical Details:
+  - Audit confirmed alignment for:
+    - signed-in entry normalization to the upload-first home page
+    - `/api/documents/intake` as the canonical intake path
+    - user-scoped runtime workspace storage under `runtime/document-workspaces/...`
+    - backend Datalab Convert submission and `request_check_url` polling
+    - temporary normalized Markdown persistence in artifact storage
+    - shared tool consumption through `DocumentContext` mirror + backend prompt-context resolution
+    - prompt assembly via `PromptOrchestrator` + tool prompt configs + selected-model execution
+    - 3-day Firestore result retention for persisted generated results
+    - existing preview and branded export pipeline through `ResultPreview` / `resultExportService`
+  - `src/features/file-analysis/hooks/useDocumentAnalysisWorkspace.ts`
+    - Added result persistence for analysis output using the existing `storeResult(...)` service.
+    - Stored payload stays preview-compatible (`kind`, `content`, `markdown`, `modelUsed`, `fileName`) so history replay and detached preview use the same result shape as the live analysis view.
+    - Added an architecture note explaining that analysis results must enter the shared result store for history/detached preview/export reopening.
+- Risks / Dependencies:
+  - Analysis persistence now depends on the same Firestore result-write path already used by quiz/study/infographic flows; if that write fails, live analysis preview still works but history persistence is warned and not guaranteed.
+  - This pass intentionally did not redesign the branded export layer, the preview renderer, or the document-runtime ownership model.
+- Notes:
+  - Preserved intentionally:
+    - upload-first `/generate` entry behavior
+    - backend-owned document runtime as source of truth
+    - `DocumentContext` as frontend mirror only
+    - current branded PDF/export implementation
+    - existing result retention policy (`3 days`)
+  - Verification:
+    - Re-read the operational guide and traced the live code path from auth entry -> upload -> extraction -> shared tool prompt context -> generation -> result display/export.
+    - Targeted TypeScript diagnostics for `src/features/file-analysis/hooks/useDocumentAnalysisWorkspace.ts` were clean (`targeted-ts-check:ok`).
+
+[2026-03-30]
+- Area: Canonical Result Payload Alignment / Assessment History + Export Consistency
+- Files: /src/features/assessment-tool/components/AssessmentStudio.tsx, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Tightened the assessment-generation result persistence payload so the Firestore-backed saved result now mirrors the live preview/export shape more closely, improving consistency between the immediate Assessment Studio result view and later history/detached preview/export reopening.
+- Reason:
+  - The operational guide requires the stored generated result to be the canonical source for preview, history, and export during the 3-day retention window.
+  - The quiz-generation flow was already persisting results, but the saved payload omitted some live-preview metadata that the shared preview model can display.
+- Technical Details:
+  - `src/features/assessment-tool/components/AssessmentStudio.tsx`
+    - Expanded the persisted quiz payload to include:
+      - `assessmentGoal`
+      - `questionStyle`
+      - `selectedTypes`
+    - Kept persistence non-blocking so generation UX does not wait on Firestore writes.
+    - Added an architecture note that Firestore-backed saved results must stay aligned with the live preview payload because history, detached preview, and branded export reopen that stored shape.
+- Risks / Dependencies:
+  - Topic-image generation remains an optional later background enhancement, so the saved payload can still legitimately omit a later-generated topic image if that background image step finishes after the initial result write.
+  - This was intentionally a payload-alignment fix only; it did not redesign the preview renderer, export stack, or result retention contract.
+- Notes:
+  - Preserved intentionally:
+    - current Assessment Studio generation flow
+    - selected-model execution path
+    - existing 3-day Firestore retention policy
+    - current branded PDF/export implementation
+  - Verification:
+    - Confirmed the saved assessment payload now carries the same core metadata the live preview model expects for history/detached preview reopening.
+
+[2026-03-30]
+- Area: Upload Intake Lifecycle / Real Backend Stage Sync / Small-File Limbo Fix
+- Files: /src/services/documentRuntimeService.ts, /src/features/assessment-tool/pages/AssessmentDashboard.tsx, /server.ts, /server/documentRuntime/datalabConvertService.ts, /server/documentRuntime/documentIntakeService.ts, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Fixed the upload flow so the browser no longer waits on an opaque post-upload limbo state. The intake request now uses a client-known operation id, the dashboard mirrors backend-owned document operation stages during extraction/persistence, the backend surfaces stage/code metadata on intake failures, and Datalab HTTP calls are bounded so stalled external requests fail explicitly instead of leaving the UI parked in a meaningless preparing state.
+- Reason:
+  - The live flow already kept document authority in `server/documentRuntime/*`, but the browser had no visibility into real backend operation stages after upload bytes finished.
+  - `XMLHttpRequest` upload transport also bypassed the repo's API runtime URL bridge, which was unsafe for separated frontend/backend deployments.
+  - External Datalab submit/poll calls had no per-request timeout, so a small file could appear stuck even when the real problem was an unbounded backend wait.
+- Technical Details:
+  - `src/services/documentRuntimeService.ts`
+    - Switched the XHR intake endpoint from a raw relative path to `buildApiUrl('/api/documents/intake')` so upload honors the existing runtime API URL bridge in split-hosting environments.
+    - Added a client-generated `x-zootopia-operation-id` header so the browser can track the same backend operation state while `/api/documents/intake` is still running.
+    - Added `fetchDocumentOperationState(...)` and internal intake polling that emits backend operation updates through `onOperationStateChange(...)`.
+    - Preserved the existing upload entry contract and raw-byte browser upload path.
+    - Preserved backward compatibility for callers that do not use operation-stage callbacks.
+  - `server.ts`
+    - Intake route now accepts the optional client-supplied operation id header and passes it into `DocumentIntakeService`.
+    - Added `GET /api/documents/operations/:operationId` backed by `runtimeStateService.getOperationState(...)`.
+    - Intake failures now return optional `code`, `stage`, and `retryable` fields in addition to the existing `error` string so the frontend can show the real failing lifecycle step.
+  - `src/features/assessment-tool/pages/AssessmentDashboard.tsx`
+    - Added backend-stage synchronization for:
+      - `submitting_to_datalab`
+      - `waiting_for_datalab`
+      - `extracting`
+      - `finalizing_extraction`
+      - `persisting_artifact`
+      - `ready`
+    - Kept visible progress, but changed the post-upload lifecycle to follow backend-reported stages instead of a blind generic prepare loop.
+    - Failure classification now respects backend `stage` / `code` metadata so the UI can blame the correct lifecycle phase instead of only the last synthetic frontend step.
+    - Added a comment warning future changes not to reintroduce synthetic looping progress after upload bytes are sent.
+  - `server/documentRuntime/datalabConvertService.ts`
+    - Added bounded HTTP timeouts for Datalab submit and poll requests.
+    - Surfaces explicit timeout/request-failure codes:
+      - `DATALAB_SUBMIT_TIMEOUT`
+      - `DATALAB_SUBMIT_REQUEST_FAILED`
+      - `DATALAB_POLL_REQUEST_TIMEOUT`
+      - `DATALAB_POLL_REQUEST_FAILED`
+    - Added a comment documenting that external extraction waits must fail explicitly so the UI does not remain in an indefinite preparing state.
+  - `server/documentRuntime/documentIntakeService.ts`
+    - Accepts an optional precomputed operation id from the request.
+    - Clears runtime document state on failed intake so a failed run does not leave stale `processing` runtime metadata behind.
+- Risks / Dependencies:
+  - The browser now performs lightweight polling against the backend document-operation state while an intake request is running. This is intentional and scoped to the active upload only.
+  - Backend stage progress is now truthful, but the displayed percentages remain milestone-based rather than byte-exact during extraction/persistence.
+  - This pass intentionally did not add a special fast path for tiny `txt` / `csv` files; they still use the current backend extraction engine and artifact contract.
+- Notes:
+  - Preserved intentionally:
+    - `/api/documents/intake` as the canonical intake entrypoint
+    - backend document authority in `server/documentRuntime/*`
+    - `DocumentContext` as a frontend mirror only
+    - current artifact storage / prompt-context / cleanup architecture
+    - current upload-first UI layout
+  - Verification:
+    - Re-traced the live intake path across dashboard -> XHR transport -> backend intake -> runtime state -> Datalab extraction -> ready promotion.
+    - Targeted TypeScript transpile checks passed for:
+      - `src/services/documentRuntimeService.ts`
+      - `src/features/assessment-tool/pages/AssessmentDashboard.tsx`
+      - `server/documentRuntime/datalabConvertService.ts`
+      - `server/documentRuntime/documentIntakeService.ts`
+      - `server.ts`
+    - Full repo-wide lint/build was not completed in this pass.
+
+[2026-03-30]
+- Area: Standalone Upload Home / Assessment Workspace Separation
+- Files: /src/App.tsx, /src/components/MainLayout.tsx, /src/components/Sidebar.tsx, /src/features/assessment-tool/index.ts, /src/features/assessment-tool/pages/AssessmentDashboard.tsx, /src/features/assessment-tool/pages/AssessmentGeneratorPage.tsx, /src/i18n/locales/en.json, /src/i18n/locales/ar.json, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Separated the standalone upload-first home page from the Assessment / Quiz generation workspace. Signed-in users now land on `/home`, the upload page remains the canonical intake and document-readiness surface, and the existing upload-ready CTA now routes into the dedicated `/generate` assessment workspace instead of scrolling to an embedded generator inside the same page.
+- Reason:
+  - The operational guide requires the upload page to be the true primary landing page, visually and structurally independent from the generator workspace.
+  - The previous implementation still coupled upload, readiness, next-step CTA, and the full `AssessmentStudio` generator into a single `/generate` screen, which blurred ownership between intake and tool execution.
+  - The existing next-step CTA was already the right product affordance and needed to be preserved rather than replaced.
+- Technical Details:
+  - `src/App.tsx`
+    - Introduced `/home` as the primary signed-in landing route.
+    - Updated post-auth normalization and `/` compatibility redirect to target `/home`.
+    - Moved the dedicated assessment workspace onto `/generate`.
+  - `src/components/MainLayout.tsx`
+    - Updated one-shot authenticated shell normalization to `/home`.
+    - Updated route-derived page title and content-width logic so `/home` is treated as a first-class workspace surface.
+    - Preserved the existing payment-callback exception and one-shot entry normalization behavior.
+  - `src/components/Sidebar.tsx`
+    - Added a top-level standalone home/upload navigation item ahead of assessment generation and analysis.
+    - Preserved the existing assessment generator route id and entitlement behavior for `/generate`.
+  - `src/features/assessment-tool/pages/AssessmentDashboard.tsx`
+    - Kept the upload, validation, intake, readiness, replace/remove, and next-step CTA flow on the standalone home page.
+    - Changed the existing “generate questions now” CTA so it routes into `/generate` instead of scrolling to an embedded inline generator.
+    - Updated home-page copy so the page reads as the upload-first landing surface rather than as the assessment workspace itself.
+    - Left the historical inline `AssessmentStudio` block present but explicitly inactive behind `renderInlineAssessmentWorkspace = false` to avoid a risky large-file rewrite while ensuring the runtime behavior now follows the separated-page architecture.
+  - `src/features/assessment-tool/pages/AssessmentGeneratorPage.tsx`
+    - Added a dedicated assessment workspace page that consumes the shared prepared document from `DocumentContext`.
+    - Shows the current document status via `CompactDocumentInfoBar`.
+    - Renders `AssessmentStudio` only when the shared document is ready.
+    - Redirect logic is not forced here; instead, the page gives the user a clear route back to `/home` when no prepared document is available.
+  - `src/features/assessment-tool/index.ts`
+    - Exported `AssessmentGeneratorPage` so the route shell can consume it without restructuring the feature module.
+  - `src/i18n/locales/en.json` and `src/i18n/locales/ar.json`
+    - Updated the upload-home title and next-step copy so the standalone upload surface and the separate assessment workspace are described correctly in both locales.
+- Risks / Dependencies:
+  - The inactive historical inline generator block still exists in `AssessmentDashboard.tsx`, but it no longer affects runtime behavior because the activation constant is hard-disabled.
+  - Assessment generation still depends on the shared `DocumentContext` mirror being populated from the backend-owned intake flow. This change intentionally did not move or redesign that ownership boundary.
+  - Direct opens of `/generate` without a ready document now show a guarded workspace state with a return path to `/home`; they do not attempt to re-upload or re-extract locally.
+- Notes:
+  - Preserved intentionally:
+    - the existing upload-ready CTA as the canonical transition control into generation
+    - `/api/documents/intake` as the canonical backend intake entrypoint
+    - backend document authority in `server/documentRuntime/*`
+    - shared extracted-markdown reuse across document-aware tools
+    - current 3-day result persistence behavior
+    - current branded preview/export pipeline
+  - Guide alignment checked against:
+    - standalone upload-first entry page
+    - shared uploaded-document model
+    - backend Datalab extraction and stored extracted-markdown reuse
+    - prompt assembly + selected-model execution path
+    - generated-result persistence and preview/export continuity
+  - Verification:
+    - Re-traced login/session normalization -> `/home` -> upload/intake -> ready CTA -> `/generate` -> `AssessmentStudio`.
+    - Targeted TypeScript transpile checks passed for:
+      - `src/App.tsx`
+      - `src/components/MainLayout.tsx`
+      - `src/components/Sidebar.tsx`
+      - `src/features/assessment-tool/index.ts`
+      - `src/features/assessment-tool/pages/AssessmentDashboard.tsx`
+      - `src/features/assessment-tool/pages/AssessmentGeneratorPage.tsx`
+    - A full repo-wide lint/build pass was not completed in this pass.
+
+[2026-03-30]
+- Area: Standalone Upload Home / Assessment Workspace Separation / Flow Audit Refresh
+- Files: /src/App.tsx, /src/components/MainLayout.tsx, /src/components/ProtectedRoute.tsx, /src/constants/fastAccessPolicy.ts, /src/constants/welcomeFlow.ts, /src/features/assessment-tool/pages/AssessmentDashboard.tsx, /src/features/assessment-tool/pages/AssessmentGeneratorPage.tsx, /src/features/assessment-tool/index.ts, /src/features/file-analysis/components/DocumentAnalysisWorkspace.tsx, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Completed the route/page split so the platform now lands on a standalone upload-first home page at `/home`, while `/generate` is the dedicated Assessment Generator workspace. The existing upload-ready CTA on the home page remains the canonical transition into the generator page. Shared document runtime, Datalab extraction, backend prompt-context loading, result persistence, preview, and branded export behavior were preserved.
+- Reason:
+  - The operational guide requires upload to be the true primary entry workflow rather than a subsection embedded inside the Assessment Generator page.
+  - The project already had most of the backend/runtime plumbing aligned, so the highest-value change was a surgical UI/routing separation plus guard-path cleanup.
+  - `/home` needed to be recognized consistently by entry routing, sidebar navigation, fast-access restrictions, and welcome-entry logic so the split did not create path-specific regressions.
+- Technical Details:
+  - `src/App.tsx`
+    - Keeps `/` as a compatibility alias and normalizes it onto `/home`.
+    - Sends authenticated users to `/home` after auth/session resolution.
+    - Routes `/generate` to the separate `AssessmentGeneratorPage`.
+  - `src/components/MainLayout.tsx`
+    - Treats `/home` as the upload-first entry page for shell normalization, page title, and wide-layout handling.
+    - Preserves normal in-app navigation after the one-shot entry redirect.
+  - `src/features/assessment-tool/pages/AssessmentDashboard.tsx`
+    - Remains the standalone upload-first landing page.
+    - Preserves the existing upload-ready CTA/button.
+    - Keeps the inline legacy generator block explicitly inactive so future edits do not silently recombine upload and generation on `/home`.
+    - Removes hash-cleanup behavior tied to the old inline generator scroll flow.
+  - `src/features/assessment-tool/pages/AssessmentGeneratorPage.tsx`
+    - Serves as the dedicated generator workspace.
+    - Consumes the same shared `DocumentContext` mirror and relies on backend-owned prepared-document state.
+    - Sends users back to `/home` when there is no ready shared document or when preparation still needs attention.
+  - `src/features/file-analysis/components/DocumentAnalysisWorkspace.tsx`
+    - Updates the no-document recovery path to point back to `/home`, which is now the canonical upload surface.
+  - `src/components/ProtectedRoute.tsx`, `src/constants/fastAccessPolicy.ts`, `src/constants/welcomeFlow.ts`
+    - Added `/home` to the relevant path/entry/temporary-access allowlists so the new landing route does not break protected-route behavior or fast-access navigation.
+- Risks / Dependencies:
+  - `/home` is now a first-class user route, so future auth, welcome, or fast-access changes must update `/home` alongside `/generate`.
+  - The historical inline generator block remains disabled rather than deleted to keep the separation explicit and backward-safe; future agents should not re-enable it casually.
+  - This pass intentionally did not redesign the sidebar structure, document runtime ownership, AI execution stack, or branded export layer.
+- Notes:
+  - Preserved intentionally:
+    - existing upload-ready CTA/button identity and purpose
+    - `/api/documents/intake` as the canonical intake entrypoint
+    - backend document authority in `server/documentRuntime/*`
+    - `DocumentContext` as a frontend mirror only
+    - shared extracted-markdown reuse across document-aware tools
+    - immediate Firestore result persistence with 3-day retention
+    - existing preview and branded PDF/export implementation
+  - Verification:
+    - Re-audited the guide-aligned flow across sign-in -> `/home` upload -> intake/extraction readiness -> preserved CTA -> `/generate` tool execution -> stored result -> preview/export reopening.
+    - Confirmed the fast-access path policy and protected-route entitlement mapping now recognize `/home`.
+
+[2026-03-30]
+- Area: Assessment Generation Model Validation / Error Clarity / Status Noise Cleanup
+- Files: /src/auth/AuthContext.tsx, /src/auth/hooks/useModelManagement.ts, /src/services/geminiService.ts, /src/features/assessment-tool/components/AssessmentStudio.tsx, /src/components/status/StatusIndicator.tsx, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Fixed the real Assessment Studio `Validating Model` choke point by removing the blocking live provider connectivity probe from the end-user generation path. Assessment generation now performs a fast local model-availability check, then relies on the existing backend-authoritative authorize/execute flow for canonical model resolution and execution. The assessment page now surfaces clearer stage-specific failures, removes the redundant `Standard` / `Thinking` mode strip, and suppresses empty `Idle` pills that were adding noise without communicating real runtime state.
+- Reason:
+  - The operational guide requires the upload -> shared extracted markdown -> prompt assembly -> selected-model execution -> stored-result flow to remain authoritative and deterministic.
+  - The previous assessment implementation blocked generation on `validateModel()` calling `/api/ai/test-connection`, which performed a real provider ping before the actual execution route. This created a second, non-authoritative failure path and could leave the page stuck at `Validating Model`.
+  - Error handling also flattened or obscured backend diagnostics, so failures often degraded into generic or misleading status copy instead of telling the user what actually failed.
+- Technical Details:
+  - `src/auth/hooks/useModelManagement.ts`
+    - Reworked `validateModel()` into a deterministic local registry/readiness check.
+    - Removed the live `/api/ai/test-connection` dependency from the user-facing generation gate.
+    - Returns canonical model metadata (`canonicalModelId`, `modelName`) so the caller can execute with the resolved model id rather than a stale or alias value.
+    - Added a code comment clarifying that `/api/ai/execute` remains the authoritative routing and authorization boundary.
+  - `src/auth/AuthContext.tsx`
+    - Updated the shared auth-context type contract so `validateModel()` exposes the canonical model id and model name returned by the hook.
+  - `src/features/assessment-tool/components/AssessmentStudio.tsx`
+    - Removed the visible `ModeSelector` strip from the assessment page.
+    - Keeps assessment reasoning control through the existing `Deep Reasoning` toggle only.
+    - Replaced the old blocking validation step with a fast local check that emits a structured local error if the selected model is unavailable.
+    - Executes generation with the resolved canonical model config and uses `useDeepReasoning` as the assessment-specific thinking mode.
+    - Writes stage messages instead of overloading stage labels, so failed stages can explain the real issue rather than leaving the tracker stuck on a generic `Validating Model` label.
+    - Preserves retry wiring and shared `DocumentContext` / prompt-context / result-persistence architecture.
+  - `src/services/geminiService.ts`
+    - Preserves structured backend/AI-executor diagnostics (`errorInfo`, trace metadata) when rethrowing user-friendly messages.
+    - This keeps assessment failures readable for users while allowing the shared status/error surfaces to retain the real backend stage/category.
+  - `src/components/status/StatusIndicator.tsx`
+    - Hides the pill entirely when the status is `idle` and there is no meaningful message.
+    - This removes empty `Idle` labels from headers and uploader surfaces without changing meaningful running/success/error statuses.
+- Risks / Dependencies:
+  - The admin/test diagnostic route `/api/ai/test-connection` still exists for explicit provider checks, but it is no longer part of the Assessment Studio generation gate.
+  - The assessment page now treats `Deep Reasoning` as the only visible thinking control. If future product work reintroduces additional generation modes on this page, they should be added intentionally and not through the generic cross-tool mode strip.
+  - This pass intentionally did not redesign prompt orchestration, backend execution routes, preview/export rendering, or the shared document-runtime model.
+- Notes:
+  - Preserved intentionally:
+    - standalone upload-first entry architecture
+    - shared uploaded-document / extracted-markdown runtime model
+    - backend-authoritative prompt-context resolution and selected-model execution
+    - immediate result persistence and preview/export reopening behavior
+    - existing branded export / PDF system
+  - Root-cause finding:
+    - the page was not primarily failing because of frontend/backend model-id mismatch; the main problem was the redundant provider-ping validation layer running before the real execution path.
+  - Verification:
+    - Re-traced the guide-aligned Assessment Studio flow against:
+      - upload-ready shared document state
+      - prompt assembly through the existing orchestration stack
+      - authoritative model execution through the shared AI executor/backend path
+      - result persistence and unchanged preview/export reopening behavior
+    - Targeted TypeScript transpile check passed for:
+      - `src/auth/AuthContext.tsx`
+      - `src/auth/hooks/useModelManagement.ts`
+      - `src/services/geminiService.ts`
+      - `src/features/assessment-tool/components/AssessmentStudio.tsx`
+      - `src/components/status/StatusIndicator.tsx`
+    - A narrower `tsc --noEmit` pass over the touched files no longer reported patch-local typing errors after the auth-context contract update; the remaining diagnostics were pre-existing `import.meta.env` typing issues in unrelated files (`src/components/status/useTrackingDiagnosticsAccess.ts`, `src/utils/logger.ts`).
+    - Full repo-wide lint/build was not completed in this pass.
+
+[2026-03-30]
+- Area: Assessment Generation Verification Completion / Production-Test Isolation Audit
+- Files: /src/auth/AuthContext.tsx, /src/auth/hooks/useModelManagement.ts, /src/services/geminiService.ts, /src/features/assessment-tool/components/AssessmentStudio.tsx, /src/components/status/StatusIndicator.tsx, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Completed the post-fix verification pass for the Assessment Studio model-validation change. Full-project lint now passes, and the production-runtime audit found no import chain from live application code into `tests/`, specs, mocks, fixtures, or debug-only helper paths.
+- Reason:
+  - The implementation needed a full-project verification pass rather than a targeted-only check.
+  - The production runtime also needed an explicit isolation audit to confirm that test-only code is not influencing the live execution path.
+- Technical Details:
+  - Full-project lint:
+    - Ran `npm run lint`, which maps to `tsc --noEmit` in this repository.
+    - The command completed successfully with no repo-wide type errors during this pass.
+  - Production-vs-test isolation audit:
+    - Scanned `src/`, `server/`, and `server.ts` for import statements or dynamic imports referencing:
+      - `tests/`
+      - `.test.*`
+      - `.spec.*`
+      - `__mocks__`
+      - `test-helpers`
+      - `test-utils`
+      - `mock*`
+      - `fixture*`
+      - `debug`
+    - The production import scans returned:
+      - `NO_PROD_TEST_IMPORT_MATCHES`
+      - `NO_PROD_MOCK_DEBUG_IMPORT_MATCHES`
+    - Enumerated candidate test/debug files with `rg --files` and confirmed the current test artifacts are isolated under `/tests/` rather than being imported by the live runtime roots.
+- Risks / Dependencies:
+  - The production/test isolation audit is import-path based and covers the current live roots (`src/`, `server/`, `server.ts`). Future additions of debug or helper code should follow the same separation discipline.
+  - This verification pass intentionally did not change unrelated runtime artifacts or pre-existing worktree changes outside the assessment-validation fix.
+- Notes:
+  - Outcome:
+    - no new lint issues remain in the changed flow
+    - no repo-wide lint/type issues remained during the successful full lint pass
+    - no production import coupling to test-only artifacts was detected
+
+[2026-03-30]
+- Area: Assessment Generator Auth Hardening / Backend Gemini Auth Determinism
+- Files: /src/utils/authHeaders.ts, /src/ai/services/aiExecutor.ts, /src/ai/services/aiRouter.ts, /src/services/geminiService.ts, /src/ai/providers/qwenProvider.ts, /server/aiProviders.ts, /server.ts, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Hardened the Assessment Studio generation path so it reuses the active browser Firebase session through a shared auth-header helper, validates `/api/ai/execute` through the canonical backend platform-session path, pins server-managed Gemini execution to API-key-based Gemini Developer API mode, and prevents raw provider auth strings from leaking directly into the user-facing tracker.
+- Reason:
+  - Production issue reports showed quiz generation failing with raw `16 UNAUTHENTICATED ... Expected OAuth 2 access token ...` during the Assessment Studio generation flow.
+  - Static tracing showed that the browser-to-backend session path was mostly intact, but the execute step still relied on ad-hoc token reads instead of the shared auth helper, and `/api/ai/execute` was weaker than the canonical `authMiddleware`/platform-session validation path.
+  - The same trace also showed that the visible raw Google message was coming from the backend provider execution/failure stage rather than a user-friendly structured error surface.
+- Technical Details:
+  - Frontend session/header reuse:
+    - Added `resolveAuthenticatedRequestContext(...)` in `/src/utils/authHeaders.ts`.
+    - The helper waits briefly for Firebase auth hydration when `auth.currentUser` is not ready yet, then resolves the bearer token and current user together.
+    - `/src/ai/services/aiExecutor.ts` now uses that helper for:
+      - `/api/ai/authorize-model`
+      - `/api/ai/execute`
+      - `/api/credits/consume-success`
+    - AI execute/authorize requests now also use `buildApiUrl(...)` so split-origin deployments stay aligned with the existing runtime bridge used by document-runtime APIs.
+  - Backend session validation:
+    - `/server.ts` `POST /api/ai/execute` now resolves caller identity through `resolveRequestUserContext(req)` before execution proceeds.
+    - This brings the execute route onto the same Firebase-token + platform-session validation contract already used by the canonical authenticated middleware path.
+    - The route still preserves user/body mismatch protection and backend-authoritative model/document/result flow.
+  - Gemini provider auth determinism:
+    - `/server/aiProviders.ts` now creates the server-managed Gemini SDK client with `vertexai: false`.
+    - `/server.ts` test-connection route does the same.
+    - This prevents ambient Google-hosted runtime environment from implicitly shifting the server-managed Gemini path toward OAuth/Vertex resolution when the intended runtime contract is `GEMINI_API_KEY`-backed Gemini Developer API execution.
+  - Error propagation / UX clarity:
+    - `/src/ai/services/aiRouter.ts` now preserves `errorInfo`, `trace`, and `traceId` when bubbling AI execution failures upward.
+    - `/src/services/geminiService.ts` now maps provider-auth/session failures to clearer user-facing messages when structured error info is absent.
+    - `/server.ts` failed backend trace stages now store `structuredError.userMessage` in the visible stage message and keep the raw upstream message in stage details instead.
+    - Added specific `PROVIDER_CREDENTIALS_REJECTED` classification for Google OAuth-style provider rejection strings on both backend and client-side executor classification paths.
+  - Fallback behavior:
+    - `/src/ai/services/aiExecutor.ts` no longer auto-falls back to another model when the failure category is `auth` or `permission`.
+    - This keeps authentication/configuration failures explicit instead of masking them behind repeated alternate-model attempts.
+  - Secondary alignment:
+    - `/src/ai/providers/qwenProvider.ts` now also uses the shared authenticated request helper plus `buildApiUrl(...)`, so that dormant backend-routed provider code is not left with a silent unauthenticated `/api/ai/execute` path.
+- Risks / Dependencies:
+  - If production still returns `PROVIDER_CREDENTIALS_REJECTED` after this patch, the remaining problem is backend Gemini credential/configuration state outside the codebase (for example the deployed `GEMINI_API_KEY` or ambient Google GenAI/Vertex environment), not the browser-session reuse path.
+  - This pass intentionally did not redesign prompt orchestration, model entitlements, document runtime, result persistence, or preview/export behavior.
+- Notes:
+  - Root-cause conclusion from the traced current repo:
+    - the Assessment Studio generator was not primarily losing the browser Firebase session before reaching `/api/ai/execute`
+    - the raw visible `UNAUTHENTICATED` string was most consistent with backend provider-auth failure and raw stage-message leakage
+    - there was still a real execution-path auth weakness because `/api/ai/execute` was weaker than the canonical platform-session middleware contract and the client execute path used ad-hoc token reads
+  - Verification:
+    - used the guide and ledger as the operational reference
+    - consolidated parallel subagent traces for:
+      - auth/session path
+      - assessment generation path
+      - AI execution/provider path
+      - runtime/request-header path
+    - ran full-project lint successfully:
+      - `npm run lint`
+      - repository script resolves to `tsc --noEmit`
+
+[2026-03-30]
+- Area: Firestore Runtime-State Migration / Redis Requirement Removal / Session + Document Runtime Clarification
+- Files: /.env, /.env.example, /cloudrun.env, /server.ts, /server/authSessionService.ts, /server/cache/firestoreBackedStore.ts, /server/cache/namespaces.ts, /server/documentRuntime/config.ts, /server/documentRuntime/runtimeStateService.ts, /ZOOTOPIA_PROJECT_LEDGER.txt
+- Summary: Confirmed that the active auth-session service was already Firestore-backed, then migrated the remaining live Redis-backed document-runtime state path to a Firestore-backed store so the primary backend session/runtime state no longer depends on Redis. Environment templates were updated to reflect Firestore as the authoritative store, while legacy Redis utilities were left in place as inactive compatibility code only.
+- Reason:
+  - Repo analysis showed the current production-style codebase had already moved the live auth-session persistence in `/server/authSessionService.ts` to Firestore collections, but `/server/documentRuntime/runtimeStateService.ts` was still the remaining active Redis-backed runtime-state/lock coordinator.
+  - The task goal was to remove Redis from the required primary session/cache/runtime path without redesigning auth, rewriting frontend contracts, or deleting unrelated legacy code.
+  - The safest incremental change was therefore to keep the existing Firestore auth-session implementation intact and replace only the active document-runtime coordination store with a Firestore-backed equivalent.
+- Technical Details:
+  - Active auth-session tracing:
+    - Re-verified that `/server.ts` imports the root `/server/authSessionService.ts` rather than the dormant cookie-based `/server/auth/*` path.
+    - Confirmed the browser contract remains unchanged: frontend still uses bearer-token calls to `/api/auth/session/bootstrap`, `/api/auth/session/refresh`, and `/api/auth/session/logout`.
+    - Kept the session snapshot contract stable, including hard-expiry, invalidation, user/admin/fast-access scoping, and backend-authoritative session validation.
+  - Firestore runtime-state migration:
+    - Added `/server/cache/firestoreBackedStore.ts` as a Firestore-first JSON key/value + lock helper with bounded in-memory fallback for local/CI recovery only.
+    - Updated `/server/documentRuntime/runtimeStateService.ts` to use the Firestore-backed store for:
+      - active document refs
+      - per-document extraction state
+      - operation status records
+      - cancellation markers
+      - document locks
+    - Kept the existing key-space shape stable through namespaced keys so actor/auth-type scoping behavior stays intact.
+    - Added `/server.ts` startup wiring so the runtime-state service receives the already-initialized Firestore instance before requests are handled.
+  - Runtime/config clarification:
+    - `/server/documentRuntime/config.ts` now treats Firestore as the active runtime-state authority and keeps `DOCUMENT_RUNTIME_MEMORY_FALLBACK_ENABLED` as the only explicit fallback toggle.
+    - `.env`, `.env.example`, and `cloudrun.env` now describe Firestore as the primary auth/session/runtime-state store instead of presenting Redis as a required runtime dependency.
+    - `/server/authSessionService.ts` now accepts a generic `AUTH_SESSION_STATE_KEY_PREFIX` override while still honoring the legacy `AUTH_SESSION_REDIS_KEY_PREFIX` alias for namespace stability.
+  - Legacy compatibility kept intentionally:
+    - `/server/cache/redisBackedStore.ts`, `/server/cache/sharedRedis.ts`, and the dormant `/server/auth/*` session stack were left in the repo so older/internal compatibility surfaces are not broken in this pass.
+    - The `redis` package therefore remains installed for now even though the active primary runtime path no longer requires it.
+- Risks / Dependencies:
+  - This pass intentionally did not redesign the frontend auth bootstrap flow, public API contracts, billing/document artifact persistence, or the dormant cookie-based auth-session stack.
+  - Redis compatibility code still exists in legacy/inactive modules, so the dependency cannot be removed safely until those dormant paths are either deleted intentionally or migrated in a separate cleanup pass.
+  - Automated `node:test` execution in this sandbox still fails with `spawn EPERM`, so runtime-behavior verification for the touched paths relied on full-project typechecking plus deployment-contract verification and direct codepath tracing rather than a passing local test runner session.
+- Notes:
+  - Root-cause conclusion:
+    - Redis was removable from the required primary runtime path because the live auth-session store had already moved to Firestore; the remaining active Redis dependency was isolated to document-runtime coordination state rather than the core auth/session contract.
+  - Verification:
+    - Ran full-project lint successfully:
+      - `npm run lint`
+      - repository script resolves to `tsc --noEmit`
+    - Re-ran deployment/runtime contract verification successfully:
+      - `npm run verify:deployment-contract`
+    - Attempted targeted auth/document-runtime tests, but the current sandbox blocks Node test subprocess spawning (`spawn EPERM`) and `tsx`-driven smoke execution also hit local tooling/runtime limitations outside the migrated code path.

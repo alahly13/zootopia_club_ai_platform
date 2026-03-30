@@ -50,6 +50,7 @@ import {
   WELCOME_AUTO_FLOW_ID,
   WELCOME_MANUAL_FLOW_ID,
 } from '../constants/popupFlows';
+import { getPaymentSessionId } from '../utils/validators';
 
 /**
  * User account dropdown.
@@ -235,6 +236,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const welcomeEntryHandledRef = useRef(false);
+  const initialEntryNormalizedRef = useRef(false);
 
   useRouteScrollReset(scrollContainerRef);
 
@@ -242,10 +244,13 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
    * Route-derived active tab keeps sidebar and page title in sync.
    */
   const activeTab = useMemo(() => {
-    return location.pathname.split('/')[1] || 'generate';
+    return location.pathname.split('/')[1] || 'home';
   }, [location.pathname]);
 
   const pageTitle = useMemo(() => {
+    if (activeTab === 'home') {
+      return t('uploadUI.uploadFirstCompactTitle', { defaultValue: 'Home Upload Workspace' });
+    }
     if (activeTab === 'analysis') {
       return t('uploadUI.analysisWorkspaceTitle', { defaultValue: 'Analysis Workspace' });
     }
@@ -259,13 +264,62 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
   }, [activeTab, t]);
 
   const contentWidthClass =
-    activeTab === 'analysis' || activeTab === 'generate' ? 'max-w-7xl' : 'max-w-5xl';
+    activeTab === 'home' || activeTab === 'analysis' || activeTab === 'generate'
+      ? 'max-w-7xl'
+      : 'max-w-5xl';
+  const initialShellEntryPath =
+    isFastAccessUser && (isFastAccessProfilePending || remainingFastAccessCredits <= 0)
+      ? '/account'
+      : '/home';
+  const hasPaymentSessionInUrl = useMemo(
+    () => Boolean(getPaymentSessionId(new URLSearchParams(location.search))),
+    [location.search]
+  );
 
   const handleSidebarNavigation = (tab: string) => {
     void preloadWorkspaceRoute(tab);
     navigate(tab === 'generate' ? '/generate' : `/${tab}`);
     setIsMobileMenuOpen(false);
   };
+
+  useEffect(() => {
+    if (hasPaymentSessionInUrl) {
+      return;
+    }
+
+    if (initialEntryNormalizedRef.current) {
+      return;
+    }
+
+    /**
+     * ENTRY ROUTING CONTRACT
+     * ------------------------------------------------------------------
+     * Fresh authenticated shell entry must always normalize to the standalone
+     * upload-first home surface instead of restoring the last open workspace
+     * route or hash.
+     *
+     * Keep this one-shot per shell mount so later in-app navigation behaves
+     * normally. Payment callback URLs are allowed to finish first.
+     */
+    initialEntryNormalizedRef.current = true;
+
+    if (
+      location.pathname === initialShellEntryPath &&
+      !location.search &&
+      !location.hash
+    ) {
+      return;
+    }
+
+    navigate(initialShellEntryPath, { replace: true });
+  }, [
+    hasPaymentSessionInUrl,
+    initialShellEntryPath,
+    location.hash,
+    location.pathname,
+    location.search,
+    navigate,
+  ]);
 
   useEffect(() => {
     if (!user?.id) {

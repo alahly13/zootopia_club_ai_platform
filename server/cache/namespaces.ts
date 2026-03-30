@@ -2,10 +2,13 @@ const BASE_REDIS_KEY_PREFIX =
   process.env.ZOOTOPIA_REDIS_KEY_PREFIX?.trim() || 'zootopia';
 
 /**
- * Redis namespace contract
+ * Legacy namespace contract
  * ------------------------------------------------------------------
  * Keep top-level cache families stable and explicit so operators can scope
- * invalidation safely without guessing which subsystem owns which keys.
+ * invalidation safely without guessing which subsystem owns which keys. The
+ * active auth-session/runtime-state flows now persist in Firestore, but these
+ * names remain stable for backward-compatible key generation and legacy Redis
+ * utilities that still exist in the repo.
  */
 export const REDIS_NAMESPACE_PREFIXES = {
   auth: `${BASE_REDIS_KEY_PREFIX}:auth`,

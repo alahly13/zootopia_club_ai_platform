@@ -241,7 +241,12 @@ interface AuthContextType {
   selectModel: (modelId: string) => void;
   getModelConfig: (modelId: string) => AIModel | undefined;
   getActiveModel: () => AIModel | undefined;
-  validateModel: (modelId: string) => Promise<{ isValid: boolean; error?: string }>;
+  validateModel: (modelId: string) => Promise<{
+    isValid: boolean;
+    error?: string;
+    canonicalModelId?: string;
+    modelName?: string;
+  }>;
 
   setPlatformApiKey: (key: string) => void;
   setQwenApiKey: (key: string) => void;

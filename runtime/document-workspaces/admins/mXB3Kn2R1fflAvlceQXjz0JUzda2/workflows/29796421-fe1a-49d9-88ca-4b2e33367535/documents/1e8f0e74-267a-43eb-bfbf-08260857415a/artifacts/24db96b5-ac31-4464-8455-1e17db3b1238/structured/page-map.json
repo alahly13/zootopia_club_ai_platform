@@ -1,0 +1,242 @@
+[
+  {
+    "pageNumber": 1,
+    "segmentIds": [
+      "8b283c44fadc80a0"
+    ],
+    "sectionTitles": [
+      "Human Physiology",
+      "Section One: Chapter 1: Introduction to Human Physiology",
+      "Introduction and General Information about Terms for the Human Body",
+      "Physiology"
+    ],
+    "headingIds": [
+      "f77e66aa48380926",
+      "04daf2f67f7a502c",
+      "6cab8bfbd873b72e",
+      "33a7d935659f0acc"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 1732
+  },
+  {
+    "pageNumber": 2,
+    "segmentIds": [
+      "2472a8b6dac9f0ac"
+    ],
+    "sectionTitles": [
+      "Anatomy",
+      "Etymology for the Language of Physiology",
+      "- Here are two examples:",
+      "- One more example:",
+      "- Now you do this one:"
+    ],
+    "headingIds": [
+      "cd8280b7f46fd41e",
+      "50a735e61e13823c",
+      "b5e9b84115a3424d",
+      "fe167322be6999da",
+      "f974f93faed353a5"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 2885
+  },
+  {
+    "pageNumber": 3,
+    "segmentIds": [
+      "b461d2731e3bb6df"
+    ],
+    "sectionTitles": [
+      "Compare Function and Process in Human Physiology",
+      "Compare Function and Process in terms of Physiology"
+    ],
+    "headingIds": [
+      "8db2aa41a5c30149",
+      "ab5aa6ee149e616e"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 1051
+  },
+  {
+    "pageNumber": 4,
+    "segmentIds": [
+      "2d42688da41e8124"
+    ],
+    "sectionTitles": [
+      "Questions for Functional and Process Approach",
+      "Functional Questions (Purpose of event):",
+      "Process Questions (How is event achieved):",
+      "Things to notice about Function and Process"
+    ],
+    "headingIds": [
+      "4bea76933202d25f",
+      "be57aef212584aa3",
+      "c14a31d32ccf7a91",
+      "3ae3b6a1c256cc02"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 2966
+  },
+  {
+    "pageNumber": 5,
+    "segmentIds": [
+      "de7e9dbb3acc5138"
+    ],
+    "sectionTitles": [
+      "Basic Functions of a Complex Organism",
+      "Body (Organ) Systems",
+      "Homeostasis",
+      "Homeostasis is maintained by Feedback Loops"
+    ],
+    "headingIds": [
+      "43ec7a4e077bb4a8",
+      "967112628d19b5b5",
+      "9d80bd3bf8d176e0",
+      "fa9d6de333881b75"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 2930
+  },
+  {
+    "pageNumber": 6,
+    "segmentIds": [
+      "ff7b8a1c0a8bd612"
+    ],
+    "sectionTitles": [],
+    "headingIds": [],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 2077
+  },
+  {
+    "pageNumber": 7,
+    "segmentIds": [
+      "a4857638df7cb7d2"
+    ],
+    "sectionTitles": [
+      "Example of what happens in between meals",
+      "The Nitty Gritty of the Feedback Loop",
+      "Here are the General components of the Feedback Loop:",
+      "The Negative Feedback Loop",
+      "Specific detailed example of a Negative Feedback Loop"
+    ],
+    "headingIds": [
+      "f444316f371e6c22",
+      "66855c490fd678b2",
+      "55663b69469c25ed",
+      "446ef8d1d135b7e7",
+      "9ecb7586f516cd8b"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 3821
+  },
+  {
+    "pageNumber": 8,
+    "segmentIds": [
+      "f1151ee798c07ee9"
+    ],
+    "sectionTitles": [
+      "The Positive Feedback Loop",
+      "Specific detailed example of a Positive Feedback Loop"
+    ],
+    "headingIds": [
+      "a76a665d6d1d8d24",
+      "666e0858db7a915b"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 2266
+  },
+  {
+    "pageNumber": 9,
+    "segmentIds": [
+      "e1ee2ec40b8e58dc"
+    ],
+    "sectionTitles": [
+      "Positive Feedback Loop for Childbirth"
+    ],
+    "headingIds": [
+      "5398b1a5ec5acf5b"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 908
+  },
+  {
+    "pageNumber": 10,
+    "segmentIds": [
+      "bbca84e9d688f41c"
+    ],
+    "sectionTitles": [
+      "Overview of Physiology Course Introduction",
+      "Summary of the Course Introduction"
+    ],
+    "headingIds": [
+      "96facdd0e4721cc1",
+      "c2ba82a39793ca37"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 3434
+  },
+  {
+    "pageNumber": 11,
+    "segmentIds": [
+      "483c53fc71ba8d45"
+    ],
+    "sectionTitles": [
+      "The Systems Studied in Human Physiology"
+    ],
+    "headingIds": [
+      "3b02e78952c69b3a"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 2584
+  },
+  {
+    "pageNumber": 12,
+    "segmentIds": [
+      "97be9c86e2794a4e"
+    ],
+    "sectionTitles": [
+      "Review Questions for Chapter 1: Introduction to Physiology"
+    ],
+    "headingIds": [
+      "3a7fd072e6e9e350"
+    ],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 1706
+  },
+  {
+    "pageNumber": 13,
+    "segmentIds": [
+      "6caf91a7f5e9f640"
+    ],
+    "sectionTitles": [],
+    "headingIds": [],
+    "sourceKinds": [
+      "native"
+    ],
+    "charCount": 765
+  }
+]

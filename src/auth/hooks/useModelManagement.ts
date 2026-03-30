@@ -117,27 +117,40 @@ export function useModelManagement(
     return getModelConfig(selectedModelId);
   }, [getModelConfig, selectedModelId]);
 
-  const validateModel = useCallback(async (modelId: string): Promise<{ isValid: boolean; error?: string }> => {
-    const model = models.find(m => m.id === modelId || m.modelId === modelId);
-    if (!model) return { isValid: false, error: "Model not found" };
+  const validateModel = useCallback(async (
+    modelId: string
+  ): Promise<{ isValid: boolean; error?: string; canonicalModelId?: string; modelName?: string }> => {
+    /**
+     * Keep live tool validation local and deterministic.
+     * `/api/ai/execute` already performs the authoritative authorization and
+     * provider routing step, so a separate provider probe here only adds a
+     * second failure path and previously left Assessment Studio stuck at a
+     * synthetic "Validating Model" gate before real execution even started.
+     */
+    const canonicalRequestedId = toCanonicalModelId(modelId || '');
+    const model = models.find((entry) => entry.id === canonicalRequestedId || entry.modelId === modelId);
 
-    try {
-      const response = await fetch('/api/ai/test-connection', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          provider: model.provider === 'Google' ? 'google' : 'qwen',
-          modelId: model.modelId,
-        }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || data?.success === false) {
-        return { isValid: false, error: data?.error || 'Validation failed' };
-      }
-      return { isValid: true };
-    } catch (err: any) {
-      return { isValid: false, error: err.message };
+    if (!model) {
+      return {
+        isValid: false,
+        error: 'The selected model is no longer available. Please choose another model.',
+      };
     }
+
+    if (!model.isEnabled || model.status !== 'Ready') {
+      return {
+        isValid: false,
+        error: `${model.name} is currently unavailable. Please choose another model.`,
+        canonicalModelId: model.id,
+        modelName: model.name,
+      };
+    }
+
+    return {
+      isValid: true,
+      canonicalModelId: model.id,
+      modelName: model.name,
+    };
   }, [models]);
 
   const validateQwenModels = useCallback(async () => {

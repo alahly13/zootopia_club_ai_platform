@@ -24,7 +24,6 @@ import { cn, Quiz, QuestionType, Language, Difficulty, UploadStage } from '../..
 import { logger } from '../../../utils/logger';
 import { generateQuiz, generateTopicImagePrompt, generateImage } from '../../../services/geminiService';
 import { exportToPDF, exportToDocx, exportToMarkdown } from '../../../utils/exporters';
-import { ModeSelector, Mode } from '../../../components/ModeSelector';
 import { QuizResult } from './QuizResult';
 import { ModelSelector } from '../../../components/ModelSelector';
 import { LoadingOverlay } from '../../../components/status/LoadingOverlay';
@@ -42,11 +41,39 @@ import { OptionSelector, OptionItem } from '../../../components/OptionSelector';
 import { useAuth } from '../../../auth/AuthContext';
 
 import { MasterConnectionSystem } from '../../../ai/services/masterConnectionSystem';
-import { ExecutionTrace } from '../../../ai/types';
+import { ExecutionTrace, StructuredAIError } from '../../../ai/types';
 import { storeResult } from '../../../services/resultService';
 import { isFacultyFastAccessUser } from '../../../constants/fastAccessPolicy';
 import { useToolScopedModelSelection } from '../../../hooks/useToolScopedModelSelection';
 import { buildDocumentContextRef } from '../../../services/documentRuntimeService';
+
+const DEFAULT_ASSESSMENT_FAILURE_MESSAGE = 'Assessment generation failed. Please try again.';
+
+const buildModelSelectionError = (message: string) => {
+  const error = new Error(message) as Error & { errorInfo?: StructuredAIError };
+  error.errorInfo = {
+    category: 'validation',
+    code: 'MODEL_SELECTION_INVALID',
+    message,
+    userMessage: message,
+    stage: 'validate',
+    retryable: false,
+  };
+  return error;
+};
+
+const resolveAssessmentFailureMessage = (error: any): string => {
+  const structuredMessage =
+    typeof error?.errorInfo?.userMessage === 'string'
+      ? error.errorInfo.userMessage.trim()
+      : '';
+  if (structuredMessage) {
+    return structuredMessage;
+  }
+
+  const rawMessage = typeof error?.message === 'string' ? error.message.trim() : '';
+  return rawMessage || DEFAULT_ASSESSMENT_FAILURE_MESSAGE;
+};
 
 const AssessmentStudio: React.FC = () => {
   const { logActivity, checkLimit, incrementUsage, deductCredits, user, getModelConfig, validateModel, notify, models } = useAuth();
@@ -69,7 +96,6 @@ const AssessmentStudio: React.FC = () => {
   } = useDocument();
 
   const isFastAccessUser = isFacultyFastAccessUser(user);
-  const [selectedMode, setSelectedMode] = useState<Mode>('standard');
   const [assessmentMode, setAssessmentMode] = useState<'quiz' | 'questions'>('quiz');
   // Keep quiz-vs-questions model memory isolated even though both modes share
   // the same execution compatibility rules and generator surface.
@@ -96,9 +122,6 @@ const AssessmentStudio: React.FC = () => {
       notify.success(`Model updated to ${resolvedModel?.name || resolvedId}`);
     }
   };
-  const handleModeSelect = (mode: Mode) => {
-    setSelectedMode(mode);
-  };
   const [selectedTypes, setSelectedTypes] = useState<QuestionType[]>(['MCQ']);
   const [typePercentages, setTypePercentages] = useState<Record<string, number>>({ 'MCQ': 100 });
   const [language, setLanguage] = useState<Language>('English');
@@ -106,6 +129,9 @@ const AssessmentStudio: React.FC = () => {
   const [customInstructions, setCustomInstructions] = useState('');
   const [generatedQuiz, setGeneratedQuiz] = useState<Quiz | null>(null);
   const [topicImage, setTopicImage] = useState<string | null>(null);
+  // Assessment generation keeps reasoning control explicit here. The generic
+  // Standard/Thinking strip was removed from this page because it duplicated
+  // the same intent and confused the real model execution state.
   const [useDeepReasoning, setUseDeepReasoning] = useState(false);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [quizPreviewThemeMode, setQuizPreviewThemeMode] = useResultPreviewThemeMode({
@@ -158,6 +184,7 @@ const AssessmentStudio: React.FC = () => {
   const hasQuizInput = normalizedExtractedText.length > 0 || normalizedDocumentContext.length > 0;
   const quizGenerationReady = hasDocument && documentStatus === 'ready' && hasQuizInput;
   const canGenerateQuiz = quizGenerationReady && totalPercentage === 100 && !documentPreparationError;
+  const effectiveGenerationMode = useDeepReasoning ? 'thinking' : 'standard';
   const generateButtonMessage = !hasDocument
     ? t('uploadUI.uploadPrompt', { defaultValue: 'Upload a document to enable quiz generation.' })
     : documentPreparationError
@@ -235,9 +262,16 @@ const AssessmentStudio: React.FC = () => {
     return () => clearInterval(interval);
   }, [generationStartTime, isLoading]);
 
-  const updateStage = (id: string, status: 'pending' | 'loading' | 'success' | 'error', label?: string) => {
+  const updateStage = (id: string, status: 'pending' | 'loading' | 'success' | 'error', message?: string) => {
     setGenStages(prev => prev.map(s => 
-      s.id === id ? { ...s, status, label: label || s.label, time: status === 'success' ? Math.floor((Date.now() - (generationStartTime || Date.now())) / 1000) : s.time } : s
+      s.id === id
+        ? {
+            ...s,
+            status,
+            message: message || s.message,
+            time: status === 'success' ? Math.floor((Date.now() - (generationStartTime || Date.now())) / 1000) : s.time,
+          }
+        : s
     ));
   };
 
@@ -280,13 +314,23 @@ const AssessmentStudio: React.FC = () => {
       // Stage: File Context
       updateStage('file', 'success');
       
-      // Stage: Validate
-      updateStage('validate', 'loading');
+      // Keep model validation fast and local here. The authoritative route and
+      // provider dispatch happen inside the shared AI executor/backend path.
+      updateStage('validate', 'loading', `Checking ${activeModel?.name || 'selected model'}...`);
       const validation = await validateModel(selectedModelId);
       if (!validation.isValid) {
-        throw new Error(`Model Validation Failed: ${validation.error || 'Model not found'}`);
+        throw buildModelSelectionError(
+          validation.error || 'The selected model is not available. Please choose another model.'
+        );
       }
-      updateStage('validate', 'success', `Model Confirmed: ${activeModel?.name || selectedModelId}`);
+      const resolvedModelId = validation.canonicalModelId || selectedModelId;
+      const resolvedModel = getModelConfig(resolvedModelId) || activeModel;
+
+      if (!resolvedModel) {
+        throw buildModelSelectionError('The selected model could not be resolved. Please choose another model.');
+      }
+
+      updateStage('validate', 'success', `Model ready: ${validation.modelName || resolvedModel.name || resolvedModelId}`);
 
       const payload = {
         text: quizInputText,
@@ -300,16 +344,15 @@ const AssessmentStudio: React.FC = () => {
           style: questionStyle,
           customInstructions,
           useDeepReasoning,
-          modelId: selectedModelId,
+          modelId: resolvedModelId,
           providerSettings: {
-            enableThinking: useDeepReasoning || selectedMode === 'thinking',
-            enableSearch: selectedMode === 'search',
+            enableThinking: useDeepReasoning,
           },
         }
       };
 
       // Stage: Generate
-      updateStage('generate', 'loading', `${activeModel?.name || 'AI'} is generating...`);
+      updateStage('generate', 'loading', `${resolvedModel.name || 'AI'} is generating...`);
       
       const questions = await generateQuiz({
         content: payload.text,
@@ -323,8 +366,8 @@ const AssessmentStudio: React.FC = () => {
         customInstructions: payload.options.customInstructions,
         useDeepReasoning: payload.options.useDeepReasoning,
         typePercentages,
-        generationMode: selectedMode,
-        modelConfig: activeModel,
+        generationMode: effectiveGenerationMode,
+        modelConfig: resolvedModel,
         providerSettings: payload.options.providerSettings,
         documentContextRef,
         observability: {
@@ -363,19 +406,26 @@ const AssessmentStudio: React.FC = () => {
       setGeneratedQuiz(newQuiz);
       await deductCredits();
       incrementUsage('quizGenerationsToday');
-      logActivity('quiz_gen', `Generated ${assessmentMode} with ${activeModel?.name}`);
+      logActivity('quiz_gen', `Generated ${assessmentMode} with ${resolvedModel.name}`);
       
       updateStage('finalize', 'success');
       setStatus('success');
       notify.success(`${assessmentMode === 'quiz' ? 'Quiz' : 'Questions'} generated successfully!`);
 
       if (user?.id) {
-        // Keep result persistence non-blocking so generation UX is never blocked by history writes.
+        /**
+         * Keep the stored result payload aligned with the live preview payload.
+         * History, detached preview, and branded export reopen Firestore-backed
+         * results, so the saved shape must remain the canonical source.
+         */
         const persistedPayload = {
           quiz: newQuiz,
           topicImage,
           assessmentMode,
+          assessmentGoal,
+          questionStyle,
           difficulty,
+          selectedTypes,
         };
 
         void storeResult(
@@ -391,17 +441,17 @@ const AssessmentStudio: React.FC = () => {
       }
 
       // Optional: Generate topic image in background (decoupled)
-      if (!isFastAccessUser && (selectedMode === 'image' || selectedMode === 'thinking')) {
+      if (!isFastAccessUser && useDeepReasoning) {
         generateTopicImagePrompt(
           quizInputText,
-          activeModel,
+          resolvedModel,
           payload.options.providerSettings,
           undefined,
           documentContextRef
         )
           .then(imagePrompt => {
             if (imagePrompt) {
-              return generateImage(imagePrompt, "1K", "16:9", activeModel);
+              return generateImage(imagePrompt, "1K", "16:9", resolvedModel);
             }
             return null;
           })
@@ -417,22 +467,17 @@ const AssessmentStudio: React.FC = () => {
 
     } catch (err: any) {
       console.error('Generation error:', err);
-      const errorMessage = err.message || 'An unexpected error occurred';
-      
-      // Classify error
-      let classifiedError = 'Generation failed';
-      if (errorMessage.includes('Model Validation')) classifiedError = 'Model validation failure';
-      else if (errorMessage.includes('API key')) classifiedError = 'Provider authentication failure';
-      else if (errorMessage.includes('limit')) classifiedError = 'Usage limit exceeded';
-      else if (errorMessage.includes('timeout')) classifiedError = 'Request timed out';
+      const failureMessage = resolveAssessmentFailureMessage(err);
 
-      setError(
-        new Error(`${classifiedError}: ${errorMessage}`),
-        () => handleGenerate(operationId)
+      setError(err, () => handleGenerate(operationId));
+      setGenStages(prev =>
+        prev.map(s =>
+          s.status === 'loading'
+            ? { ...s, status: 'error', message: failureMessage }
+            : s
+        )
       );
-      
-      // Mark current loading stage as error
-      setGenStages(prev => prev.map(s => s.status === 'loading' ? { ...s, status: 'error' } : s));
+      notify.error(failureMessage);
     } finally {
       setGenerationStartTime(null);
     }
@@ -518,11 +563,6 @@ const AssessmentStudio: React.FC = () => {
                     MasterConnectionSystem.getCompatibleModels('quiz').includes(m.id) &&
                     (!isFastAccessUser || ['Google', 'Qwen'].includes(m.provider))
                   }
-                />
-                <ModeSelector 
-                  selectedMode={selectedMode}
-                  onModeSelect={handleModeSelect}
-                  model={activeModel || (models && models.length > 0 ? models[0] : undefined)}
                 />
               </div>
             </div>

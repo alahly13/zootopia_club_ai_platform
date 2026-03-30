@@ -10,8 +10,8 @@ import { jobOrchestrationService } from './jobOrchestrationService.js';
 import { documentWorkspaceStorage } from './documentStorage.js';
 import { DocumentArtifactStore } from './documentArtifactStore.js';
 import { resolveDocumentProcessingStrategy } from './documentProcessingStrategyResolver.js';
-import { DOCUMENT_EXTRACTION_VERSION } from './config.js';
-import { DocumentActorContext, DocumentIntakeResult } from './types.js';
+import { DOCUMENT_EXTRACTION_VERSION, getDocumentExtractionEngine } from './config.js';
+import { DocumentActorContext, DocumentIntakeResult, DocumentOperationState } from './types.js';
 
 export class DocumentIntakeService {
   constructor(private readonly artifactStore: DocumentArtifactStore) {}
@@ -22,13 +22,17 @@ export class DocumentIntakeService {
     mimeType: string;
     buffer: Buffer;
     requestedPathway?: 'local_extraction' | 'direct_file_to_model' | null;
+    operationId?: string | null;
   }): Promise<DocumentIntakeResult> {
     const documentId = crypto.randomUUID();
     const workflowId = crypto.randomUUID();
-    const operationId = `doc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const operationId =
+      (typeof input.operationId === 'string' && input.operationId.trim()) ||
+      `doc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const traceId = `${documentId}:${operationId}`;
     const cancelledMessage = 'DOCUMENT_OPERATION_CANCELLED';
     const staleWriteMessage = 'DOCUMENT_RUNTIME_STALE_WRITE_BLOCKED';
+    const extractionEngine = getDocumentExtractionEngine();
     const strategy = resolveDocumentProcessingStrategy({
       toolId: 'document-runtime',
       requestedPathway: input.requestedPathway || 'local_extraction',
@@ -144,10 +148,18 @@ export class DocumentIntakeService {
 
         await ensureOperationActive();
         await jobOrchestrationService.patch(input.actor, operationId, {
-          stage: 'extracting',
-          message: 'Extracting reusable document artifacts',
+          stage: extractionEngine === 'python_legacy' ? 'extracting' : 'submitting_to_datalab',
+          message:
+            extractionEngine === 'python_legacy'
+              ? 'Running legacy layered extraction'
+              : 'Submitting document to Datalab Convert',
         });
 
+        /**
+         * Keep extraction-stage messages backend-authoritative. The frontend
+         * upload flow must not guess hidden remote-conversion progress, and it
+         * must not decide which extraction engine is active.
+         */
         const extracted = await extractDocumentArtifact({
           actor: input.actor,
           workflowId,
@@ -158,6 +170,12 @@ export class DocumentIntakeService {
           buffer: input.buffer,
           sourcePath: storedSource.absolutePath,
           sourceRelativePath: storedSource.relativePath,
+          reportStage: async (stageUpdate) => {
+            await jobOrchestrationService.patch(input.actor, operationId, {
+              stage: stageUpdate.stage,
+              message: stageUpdate.message,
+            });
+          },
         });
 
         await ensureOperationActive();
@@ -290,7 +308,12 @@ export class DocumentIntakeService {
           },
         };
       } catch (error) {
-        const errorMessage = String((error as Error)?.message || 'document-intake-failed');
+        const runtimeError = error as Error & {
+          code?: string;
+          operationStage?: DocumentOperationState['stage'];
+          retryable?: boolean;
+        };
+        const errorMessage = String(runtimeError?.message || 'document-intake-failed');
         const wasCancelled =
           errorMessage === cancelledMessage || errorMessage === staleWriteMessage;
 
@@ -328,17 +351,18 @@ export class DocumentIntakeService {
         }
 
         await jobOrchestrationService.fail(input.actor, operationId, {
-          stage: 'failed',
+          stage: runtimeError.operationStage || 'failed',
           message: errorMessage,
-          errorCode: 'DOCUMENT_INTAKE_FAILED',
+          errorCode: runtimeError.code || 'DOCUMENT_INTAKE_FAILED',
         });
 
         if (documentCreated) {
           await this.artifactStore.markFailed(input.actor, documentId, {
-            code: 'DOCUMENT_INTAKE_FAILED',
+            code: runtimeError.code || 'DOCUMENT_INTAKE_FAILED',
             message: errorMessage,
-            retryable: true,
+            retryable: runtimeError.retryable ?? true,
           });
+          await runtimeStateService.clearDocumentState(input.actor, documentId);
           await documentWorkspaceStorage.removeDocumentWorkspace(input.actor, workflowId, documentId);
         }
 

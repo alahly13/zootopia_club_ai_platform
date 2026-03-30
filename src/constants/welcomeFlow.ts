@@ -2,7 +2,7 @@ export const WELCOME_POPUP_SESSION_KEY = 'zootopia_welcome_popup_shown';
 // Keep the existing audio key name for backward compatibility with sessions
 // that were already using the old welcome-audio once-per-session behavior.
 export const WELCOME_AUDIO_SESSION_KEY = 'hasPlayedWelcomeAudio';
-export const WELCOME_ENTRY_PATHS = ['/', '/generate'] as const;
+export const WELCOME_ENTRY_PATHS = ['/', '/home', '/generate'] as const;
 export const WELCOME_FLOW_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export const WELCOME_AUDIO_START_DELAY_MS = 220;
 

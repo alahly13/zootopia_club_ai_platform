@@ -213,6 +213,7 @@ async function startServer() {
   }
 
   const db = getFirestore(admin.app(), "zootopiaclub");
+  runtimeStateService.configureFirestore(db);
   const billingService = new BillingService(db);
   const userService = new UserService(db);
   const documentArtifactStore = new DocumentArtifactStore(db);
@@ -2149,10 +2150,14 @@ const logAdminUserAction = async (
         const requestedPathwayHeader = Array.isArray(req.headers['x-zootopia-document-pathway'])
           ? req.headers['x-zootopia-document-pathway'][0]
           : req.headers['x-zootopia-document-pathway'];
+        const operationIdHeader = Array.isArray(req.headers['x-zootopia-operation-id'])
+          ? req.headers['x-zootopia-operation-id'][0]
+          : req.headers['x-zootopia-operation-id'];
 
         const fileName = decodeUriComponentSafe(encodedFileNameHeader);
         const mimeType = normalizeOptionalString(encodedMimeTypeHeader) || 'application/octet-stream';
         const requestedPathway = normalizeDocumentProcessingPathway(requestedPathwayHeader);
+        const operationId = normalizeOptionalBoundedString(operationIdHeader, 128);
         const fileBuffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || []);
         fileNameForLog = fileName || null;
         requestedPathwayForLog = requestedPathway;
@@ -2171,6 +2176,7 @@ const logAdminUserAction = async (
             mimeType,
             fileSizeBytes: fileBuffer.byteLength,
             requestedPathway,
+            operationId,
           },
         });
 
@@ -2194,6 +2200,7 @@ const logAdminUserAction = async (
           mimeType,
           buffer: fileBuffer,
           requestedPathway,
+          operationId,
         });
 
         logDiagnostic('info', 'documents.intake.completed', {
@@ -2275,13 +2282,46 @@ const logAdminUserAction = async (
           },
         });
 
+        const operationStage = normalizeOptionalString(error?.operationStage) || undefined;
+        const errorCode = normalizeOptionalString(error?.code) || undefined;
+        const retryable = typeof error?.retryable === 'boolean' ? error.retryable : undefined;
+
         return res.status(status).json({
           success: false,
           error: message,
+          code: errorCode || message,
+          stage: operationStage,
+          retryable,
         });
       }
     }
   );
+
+  app.get('/api/documents/operations/:operationId', authMiddleware, async (req, res) => {
+    try {
+      const actor = resolveDocumentActorContextFromRequest(req);
+      const operationId = normalizeRequiredString(req.params.operationId, 'operationId');
+      const operation = await runtimeStateService.getOperationState(actor, operationId);
+
+      if (!operation) {
+        return res.status(404).json({
+          success: false,
+          error: 'document-operation-not-found',
+        });
+      }
+
+      return res.json({
+        success: true,
+        operation,
+      });
+    } catch (error: any) {
+      const message = normalizeOptionalString(error?.message) || 'document-operation-load-failed';
+      res.status(message === 'DOCUMENT_ACCESS_DENIED' ? 403 : 404).json({
+        success: false,
+        error: message,
+      });
+    }
+  });
 
   app.get('/api/documents/active', authMiddleware, async (req, res) => {
     try {
@@ -7535,6 +7575,14 @@ const logAdminUserAction = async (
         category = 'permission';
         code = 'PERMISSION_DENIED';
         userMessage = 'You do not have permission to perform this operation.';
+      } else if (
+        lower.includes('expected oauth 2 access token') ||
+        lower.includes('invalid authentication credentials') ||
+        lower.includes('failed to fetch a valid google oauth2 access token')
+      ) {
+        category = 'auth';
+        code = 'PROVIDER_CREDENTIALS_REJECTED';
+        userMessage = 'Generation reached the AI provider, but the backend Gemini credentials were rejected. Please retry once. If it continues, the server Gemini configuration needs attention.';
       } else if (lower.includes('auth') || lower.includes('unauthorized') || lower.includes('api key')) {
         category = 'auth';
         code = 'AUTHENTICATION_FAILED';
@@ -7705,55 +7753,38 @@ const logAdminUserAction = async (
       });
     }
 
-    let callerUid: string | null = null;
-    const authorizationHeader = req.headers.authorization;
-    if (authorizationHeader?.startsWith('Bearer ')) {
-      const token = authorizationHeader.slice('Bearer '.length).trim();
-      if (token) {
-        try {
-          const decoded = await admin.auth().verifyIdToken(token);
-          callerUid = decoded.uid;
-        } catch {
-          const structuredError = {
-            category: 'auth',
-            code: 'INVALID_AUTH_TOKEN',
-            message: 'Invalid bearer token',
-            userMessage: 'Session is invalid. Please sign in again.',
-            stage: 'request_validation',
-            traceId,
-            retryable: false,
-          };
-          return res.status(401).json({
-            success: false,
-            error: structuredError.userMessage,
-            errorInfo: structuredError,
-            traceId,
-          });
-        }
-      }
-    }
-
-    const bodyUserId = typeof req.body?.userId === 'string' ? req.body.userId.trim() : '';
-    if (bodyUserId && !callerUid) {
+    const resolvedRequestContext = await resolveRequestUserContext(req);
+    if (!resolvedRequestContext.ok) {
+      const routeError =
+        resolvedRequestContext.statusCode === 401
+          ? 'Your session is invalid or expired. Please sign in again.'
+          : normalizeOptionalString((resolvedRequestContext.payload as Record<string, unknown>)?.error) || 'Access denied for this request context.';
+      const routeErrorCode =
+        normalizeOptionalString((resolvedRequestContext.payload as Record<string, unknown>)?.code) ||
+        (resolvedRequestContext.statusCode === 401 ? 'AUTH_SESSION_INVALID' : 'PERMISSION_DENIED');
       const structuredError = {
-        category: 'auth',
-        code: 'AUTH_REQUIRED_FOR_USER_CONTEXT',
-        message: 'A bearer token is required when userId is provided',
-        userMessage: 'Session is required to run this operation.',
+        category: resolvedRequestContext.statusCode === 401 ? 'auth' : 'permission',
+        code: routeErrorCode,
+        message: normalizeOptionalString((resolvedRequestContext.payload as Record<string, unknown>)?.error) || routeError,
+        userMessage: routeError,
         stage: 'request_validation',
         traceId,
         retryable: false,
       };
 
-      return res.status(401).json({
+      return res.status(resolvedRequestContext.statusCode).json({
+        ...resolvedRequestContext.payload,
         success: false,
-        error: structuredError.userMessage,
+        error: routeError,
         errorInfo: structuredError,
         traceId,
       });
     }
 
-    if (callerUid && bodyUserId && callerUid !== bodyUserId) {
+    const callerUid = resolvedRequestContext.userContext.uid;
+
+    const bodyUserId = typeof req.body?.userId === 'string' ? req.body.userId.trim() : '';
+    if (bodyUserId && callerUid !== bodyUserId) {
       const structuredError = {
         category: 'permission',
         code: 'USER_CONTEXT_MISMATCH',
@@ -7771,7 +7802,7 @@ const logAdminUserAction = async (
       });
     }
 
-    const effectiveUserId = callerUid || bodyUserId;
+    const effectiveUserId = callerUid;
     const normalizedOperationId = normalizeFastAccessOperationId(incomingOperationId, traceId);
     const promptHash = crypto.createHash('sha256').update(String(userPrompt || '')).digest('hex');
 
@@ -8378,7 +8409,7 @@ const logAdminUserAction = async (
             model: authorizedFinalModelId,
             usage: result.usage || {},
             timestamp: new Date().toISOString(),
-            userId: req.body.userId || 'unknown'
+            userId: effectiveUserId || 'unknown'
           });
           finishBackendStage('usage_logging', 'completed', 'Usage metrics persisted');
         } catch (e) {
@@ -8542,9 +8573,10 @@ const logAdminUserAction = async (
     } catch (error: any) {
       const failedStageId = backendTraceStages.find(stage => stage.status === 'running')?.id || 'provider_execution';
       const structuredError = classifyApiError(error, failedStageId);
-      finishBackendStage(failedStageId, 'failed', structuredError.message, {
+      finishBackendStage(failedStageId, 'failed', structuredError.userMessage, {
         category: structuredError.category,
         code: structuredError.code,
+        rawMessage: structuredError.message,
       });
       startBackendStage('response_finalize', 'Building error response payload');
       finishBackendStage('response_finalize', 'failed', structuredError.userMessage, {
@@ -8630,7 +8662,10 @@ const logAdminUserAction = async (
         });
         if (!runtime.credentialResolved) throw new Error(`${runtime.envKeyName} is required`);
         const { GoogleGenAI } = await import("@google/genai");
-        const ai = new GoogleGenAI({ apiKey: runtime.apiKey });
+        const ai = new GoogleGenAI({
+          apiKey: runtime.apiKey,
+          vertexai: false,
+        });
         const response = await ai.models.generateContent({
           model: runtime.canonicalModelId,
           contents: "Hello",
@@ -8755,7 +8790,7 @@ const logAdminUserAction = async (
     console.log(`[runtime] pythonWorker=${DOCUMENT_RUNTIME_PYTHON_SCRIPT_PATH}`);
     console.log(`[runtime] documentStorage=${DOCUMENT_RUNTIME_STORAGE_ROOT}`);
     console.log(
-      `[runtime] documentRuntimeFallback=${shouldAllowDocumentRuntimeMemoryFallback() ? 'memory-enabled' : 'redis-backed'}`
+      `[runtime] documentRuntimeStateStore=${shouldAllowDocumentRuntimeMemoryFallback() ? 'firestore-primary+memory-fallback' : 'firestore-primary'}`
     );
     console.log(
       `[runtime] allowedOrigins=${runtimeConfig.allowedOrigins.length > 0 ? runtimeConfig.allowedOrigins.join(', ') : 'same-origin only'}`
